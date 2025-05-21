@@ -8,10 +8,10 @@
     label { display: block; margin-bottom: .5rem; }
     #out  { font-size: 1.4rem; margin-top: .8rem; }
   </style>
-  <!-- 1) Pyodide: Python in the browser -->
+  <!-- Pyodide (Python in browser) -->
   <script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
-  <!-- 2) OpenCV.js: make sure this file exists in your /public (or same dir as index.html)! -->
-  <script src="opencv.js"></script>
+  <!-- OpenCV.js: Always use async & CDN! -->
+  <script async src="https://docs.opencv.org/4.x/opencv.js"></script>
 </head>
 <body>
   <h2>Skintelli Antioxidant Score</h2>
@@ -25,43 +25,40 @@
     const out = document.getElementById('out');
     const show = msg => out.textContent = msg;
 
-    // ---- Wait for OpenCV.js to load before ANYTHING else! ----
+    // 1) Wait for OpenCV.js (waits until cv is ready)
     show('⏳ loading OpenCV…');
-    await new Promise(res => {
-      // If cv is already loaded (cache, reload), continue immediately.
-      if (window.cv && cv.getBuildInformation) return res();
-      // Otherwise, wait for OpenCV to finish loading.
-      window.Module = { onRuntimeInitialized: res };
+    await new Promise(resolve => {
+      function check() {
+        if (window.cv && cv.getBuildInformation) return resolve();
+        setTimeout(check, 100);
+      }
+      check();
     });
     show('✅ OpenCV ready');
 
     try {
-      // ---- Load Pyodide ----
+      // 2) Load Pyodide (Python-in-browser)
       show('⏳ loading Python…');
-      const py = await loadPyodide({
-        indexURL: "https://cdn.jsdelivr.net/pyodide/v0.25.1/full/"
-      });
-      await py.loadPackage(['numpy','pandas','scikit-image']);
+      const py = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.25.1/full/" });
+      await py.loadPackage(['numpy', 'pandas', 'scikit-image']);
       show('✅ Python ready');
 
-      // ---- Load reference table ----
+      // 3) Load your CSV lookup table
       show('⏳ loading reference table…');
       const csvText = await fetch('trainingLab.csv').then(r => r.text());
       py.FS.writeFile('/tmp/training.csv', csvText);
-      show('✅ reference table loaded');
+      show('✅ Reference table loaded');
 
-      // ---- Inject the scorer code ----
+      // 4) Inject your scorer code
       show('⏳ compiling scorer…');
       await py.runPythonAsync(`
 import numpy as np, pandas as pd, cv2 as cv
 from skimage.color import rgb2lab, deltaE_ciede2000 as dE
 
-# load lookup
 df     = pd.read_csv('/tmp/training.csv')
 LAB    = df[['L','a','b']].values
 SCORES = df['score'].values
 
-# constants
 W, H   = 1000, 500
 BOX    = 0.06; PAD = 0.08
 PX, SY, CY = 0.92, 0.20, 0.60
@@ -115,15 +112,14 @@ def score_array(bgr):
 def score_from_js(buf, h, w):
     arr = np.frombuffer(buf, dtype=np.uint8).reshape(h, w, 3).copy()
     return score_array(arr)
-`);
+      `);
       show('✅ Scorer ready — pick a photo.');
 
-      // ---- 5) File input handler ----
+      // 5) File input handler
       document.getElementById('file').addEventListener('change', async ev => {
         const f = ev.target.files[0];
         if (!f) return;
         show('🖼️ decoding & scoring…');
-
         // Decode with OpenCV.js
         const buffer = await f.arrayBuffer();
         const u8     = new Uint8Array(buffer);
