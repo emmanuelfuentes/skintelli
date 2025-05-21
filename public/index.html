@@ -8,10 +8,9 @@
     label { display: block; margin-bottom: .5rem; }
     #out { font-size: 1.4rem; margin-top: 1rem; }
   </style>
-
-  <!-- 1) Pyodide (Python in WASM) -->
-  <script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
-  <!-- 2) OpenCV.js (no async so it loads before our module) -->
+<!-- load Python in WASM -->
+<script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
+<!-- load OpenCV.js so `cv` is available globally -->
 <script src="https://docs.opencv.org/4.x/opencv.js"></script>
 </head>
 <body>
@@ -22,6 +21,8 @@
   <div id="out">⏳ loading engine…</div>
 
   <script type="module">
+      await new Promise(res => { cv.onRuntimeInitialized = res; });
+
     const out = document.getElementById('out');
     const show = msg => out.textContent = msg;
 
