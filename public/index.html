@@ -8,11 +8,10 @@
     label { display: block; margin-bottom: .5rem; }
     #out  { font-size: 1.4rem; margin-top: .8rem; }
   </style>
-
   <!-- 1) Pyodide: Python in the browser -->
   <script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
-  <!-- 2) OpenCV.js: computer vision -->
-<script src="opencv.js"></script>
+  <!-- 2) OpenCV.js: make sure this file exists in your /public (or same dir as index.html)! -->
+  <script src="opencv.js"></script>
 </head>
 <body>
   <h2>Skintelli Antioxidant Score</h2>
@@ -24,10 +23,20 @@
 
   <script type="module">
     const out = document.getElementById('out');
-    const show = txt => out.textContent = txt;
+    const show = msg => out.textContent = msg;
+
+    // ---- Wait for OpenCV.js to load before ANYTHING else! ----
+    show('⏳ loading OpenCV…');
+    await new Promise(res => {
+      // If cv is already loaded (cache, reload), continue immediately.
+      if (window.cv && cv.getBuildInformation) return res();
+      // Otherwise, wait for OpenCV to finish loading.
+      window.Module = { onRuntimeInitialized: res };
+    });
+    show('✅ OpenCV ready');
 
     try {
-      // ─── 1) Python ───────────────────────────────────────
+      // ---- Load Pyodide ----
       show('⏳ loading Python…');
       const py = await loadPyodide({
         indexURL: "https://cdn.jsdelivr.net/pyodide/v0.25.1/full/"
@@ -35,18 +44,13 @@
       await py.loadPackage(['numpy','pandas','scikit-image']);
       show('✅ Python ready');
 
-      // ─── 2) OpenCV ───────────────────────────────────────
-      show('⏳ loading OpenCV…');
-      await new Promise(resolve => { cv.onRuntimeInitialized = resolve; });
-      show('✅ OpenCV ready');
-
-      // ─── 3) Reference table ───────────────────────────────
+      // ---- Load reference table ----
       show('⏳ loading reference table…');
       const csvText = await fetch('trainingLab.csv').then(r => r.text());
       py.FS.writeFile('/tmp/training.csv', csvText);
       show('✅ reference table loaded');
 
-      // ─── 4) Scorer ────────────────────────────────────────
+      // ---- Inject the scorer code ----
       show('⏳ compiling scorer…');
       await py.runPythonAsync(`
 import numpy as np, pandas as pd, cv2 as cv
@@ -114,12 +118,13 @@ def score_from_js(buf, h, w):
 `);
       show('✅ Scorer ready — pick a photo.');
 
-      // ─── 5) File handler ──────────────────────────────────
+      // ---- 5) File input handler ----
       document.getElementById('file').addEventListener('change', async ev => {
         const f = ev.target.files[0];
         if (!f) return;
         show('🖼️ decoding & scoring…');
 
+        // Decode with OpenCV.js
         const buffer = await f.arrayBuffer();
         const u8     = new Uint8Array(buffer);
         const mat    = cv.matFromArray(u8, 1);
@@ -139,7 +144,7 @@ def score_from_js(buf, h, w):
     }
     catch(err) {
       console.error(err);
-      show('⚠️ ' + err.message);
+      show('⚠️ ' + (err.message || err));
     }
   </script>
 </body>
