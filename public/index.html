@@ -6,28 +6,28 @@
   <style>
     body { font-family: system-ui, Arial, sans-serif; max-width: 680px; margin: 40px auto; }
     label { display: block; margin-bottom: .5rem; }
-    #out { font-size: 1.4rem; margin-top: 1rem; }
+    #out  { font-size: 1.4rem; margin-top: .8rem; }
   </style>
-<!-- load Python in WASM -->
-<script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
-<!-- load OpenCV.js so `cv` is available globally -->
-<script src="OpenCV.js"></script>
+
+  <!-- 1) Pyodide: Python in the browser -->
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
+  <!-- 2) OpenCV.js: computer vision -->
+  <script src="https://docs.opencv.org/4.x/opencv.js"></script>
 </head>
 <body>
   <h2>Skintelli Antioxidant Score</h2>
-  <label>Choose card photo:
+  <label>
+    Choose card photo:
     <input type="file" id="file" accept="image/*">
   </label>
   <div id="out">⏳ loading engine…</div>
 
   <script type="module">
-      await new Promise(res => { cv.onRuntimeInitialized = res; });
-
     const out = document.getElementById('out');
-    const show = msg => out.textContent = msg;
+    const show = txt => out.textContent = txt;
 
     try {
-      // ─── 1) Bootstrap Python ─────────────────────────────
+      // ─── 1) Python ───────────────────────────────────────
       show('⏳ loading Python…');
       const py = await loadPyodide({
         indexURL: "https://cdn.jsdelivr.net/pyodide/v0.25.1/full/"
@@ -35,19 +35,19 @@
       await py.loadPackage(['numpy','pandas','scikit-image']);
       show('✅ Python ready');
 
-      // ─── 2) Wait for OpenCV.js ───────────────────────────
+      // ─── 2) OpenCV ───────────────────────────────────────
       show('⏳ loading OpenCV…');
       await new Promise(resolve => { cv.onRuntimeInitialized = resolve; });
       show('✅ OpenCV ready');
 
-      // ─── 3) Load lookup data ────────────────────────────
+      // ─── 3) Reference table ───────────────────────────────
       show('⏳ loading reference table…');
       const csvText = await fetch('trainingLab.csv').then(r => r.text());
       py.FS.writeFile('/tmp/training.csv', csvText);
       show('✅ reference table loaded');
 
-      // ─── 4) Inject scorer code ───────────────────────────
-      show('⏳ initializing scorer…');
+      // ─── 4) Scorer ────────────────────────────────────────
+      show('⏳ compiling scorer…');
       await py.runPythonAsync(`
 import numpy as np, pandas as pd, cv2 as cv
 from skimage.color import rgb2lab, deltaE_ciede2000 as dE
@@ -58,9 +58,9 @@ LAB    = df[['L','a','b']].values
 SCORES = df['score'].values
 
 # constants
-W,H   = 1000,500
-BOX   = 0.06; PAD = 0.08
-PX    = 0.92; SY  = 0.20; CY = 0.60
+W, H   = 1000, 500
+BOX    = 0.06; PAD = 0.08
+PX, SY, CY = 0.92, 0.20, 0.60
 
 def delta(l1, l2): return float(dE(l1[None], l2[None])[0])
 
@@ -76,18 +76,17 @@ def warp_card(img):
     approx = cv.approxPolyDP(quad,0.02*peri,True)
     if len(approx)!=4: return cv.resize(img,(W,H))
     pts = np.squeeze(approx).astype(np.float32)
-    s   = pts.sum(1); d = np.diff(pts, axis=1).ravel()
+    s   = pts.sum(1); d = np.diff(pts,axis=1).ravel()
     ord = np.array([pts[np.argmin(s)], pts[np.argmin(d)],
                     pts[np.argmax(s)], pts[np.argmax(d)]], np.float32)
     dst = np.array([[0,0],[W-1,0],[W-1,H-1],[0,H-1]], np.float32)
-    M   = cv.getPerspectiveTransform(ord, dst)
-    return cv.warpPerspective(img, M, (W,H))
+    return cv.warpPerspective(img, cv.getPerspectiveTransform(ord,dst), (W,H))
 
 def crop_sq(img, cx, cy, pct):
-    h,w = img.shape[:2]
-    side = int(pct*w)
-    x0 = max(0, int(cx*w)-side//2)
-    y0 = max(0, int(cy*h)-side//2)
+    h,w  = img.shape[:2]
+    side = int(pct * w)
+    x0   = max(0, int(cx*w) - side//2)
+    y0   = max(0, int(cy*h) - side//2)
     return img[y0:y0+side, x0:x0+side]
 
 def med_lab(roi):
@@ -105,29 +104,29 @@ def score_array(bgr):
     dists   = np.array([delta(sc, r) for r in LAB])
     if dists.min() <= 3: raw = SCORES[dists.argmin()]
     else:
-        wts  = np.exp(-np.array([delta(sc,p) for p in pc])/2.5)
-        raw  = (wts*np.arange(6)).sum()/wts.sum()
-    return round(np.clip(raw,0,5)*4)/4
+        wts = np.exp(-np.array([delta(sc, p) for p in pc]) / 2.5)
+        raw = (wts * np.arange(6)).sum() / wts.sum()
+    return round(np.clip(raw, 0, 5) * 4) / 4
 
-def score_from_js(buf,h,w):
-    arr = np.frombuffer(buf, dtype=np.uint8).reshape(h,w,3).copy()
+def score_from_js(buf, h, w):
+    arr = np.frombuffer(buf, dtype=np.uint8).reshape(h, w, 3).copy()
     return score_array(arr)
 `);
       show('✅ Scorer ready — pick a photo.');
 
-      // ─── 5) File input handler ───────────────────────────
-      document.getElementById('file').addEventListener('change', async e => {
-        const f = e.target.files[0];
+      // ─── 5) File handler ──────────────────────────────────
+      document.getElementById('file').addEventListener('change', async ev => {
+        const f = ev.target.files[0];
         if (!f) return;
         show('🖼️ decoding & scoring…');
 
         const buffer = await f.arrayBuffer();
         const u8     = new Uint8Array(buffer);
-        const mat    = cv.matFromArray(u8,1);
+        const mat    = cv.matFromArray(u8, 1);
         const img    = cv.imdecode(mat, cv.IMREAD_COLOR);
         mat.delete();
 
-        const { rows:h, cols:w } = img;
+        const { rows: h, cols: w } = img;
         const data = new Uint8Array(img.data);
         img.delete();
 
@@ -140,7 +139,7 @@ def score_from_js(buf,h,w):
     }
     catch(err) {
       console.error(err);
-      show('⚠️ ' + err);
+      show('⚠️ ' + err.message);
     }
   </script>
 </body>
