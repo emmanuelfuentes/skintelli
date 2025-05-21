@@ -10,8 +10,8 @@
   </style>
   <!-- Pyodide (Python in browser) -->
   <script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
-  <!-- OpenCV.js: Always use async & CDN! -->
-  <script async src="https://docs.opencv.org/4.x/opencv.js"></script>
+  <!-- OpenCV.js: official CDN, must use Module.onRuntimeInitialized for ready -->
+  <script src="https://docs.opencv.org/4.x/opencv.js"></script>
 </head>
 <body>
   <h2>Skintelli Antioxidant Score</h2>
@@ -20,36 +20,37 @@
     <input type="file" id="file" accept="image/*">
   </label>
   <div id="out">⏳ loading engine…</div>
-
   <script type="module">
     const out = document.getElementById('out');
     const show = msg => out.textContent = msg;
 
-    // 1) Wait for OpenCV.js (waits until cv is ready)
     show('⏳ loading OpenCV…');
+    // ---- Wait for OpenCV.js using the canonical onRuntimeInitialized ----
     await new Promise(resolve => {
-      function check() {
-        if (window.cv && cv.getBuildInformation) return resolve();
-        setTimeout(check, 100);
-      }
-      check();
+      // OpenCV.js will set window.Module if not already set
+      if (window.cv && cv.getBuildInformation) return resolve();
+      window.Module = { 
+        onRuntimeInitialized: () => {
+          show('✅ OpenCV ready');
+          resolve();
+        }
+      };
     });
-    show('✅ OpenCV ready');
 
     try {
-      // 2) Load Pyodide (Python-in-browser)
+      // ---- Pyodide ----
       show('⏳ loading Python…');
       const py = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.25.1/full/" });
       await py.loadPackage(['numpy', 'pandas', 'scikit-image']);
       show('✅ Python ready');
 
-      // 3) Load your CSV lookup table
+      // ---- CSV ----
       show('⏳ loading reference table…');
       const csvText = await fetch('trainingLab.csv').then(r => r.text());
       py.FS.writeFile('/tmp/training.csv', csvText);
       show('✅ Reference table loaded');
 
-      // 4) Inject your scorer code
+      // ---- Python scorer ----
       show('⏳ compiling scorer…');
       await py.runPythonAsync(`
 import numpy as np, pandas as pd, cv2 as cv
@@ -115,7 +116,7 @@ def score_from_js(buf, h, w):
       `);
       show('✅ Scorer ready — pick a photo.');
 
-      // 5) File input handler
+      // ---- File input handler ----
       document.getElementById('file').addEventListener('change', async ev => {
         const f = ev.target.files[0];
         if (!f) return;
