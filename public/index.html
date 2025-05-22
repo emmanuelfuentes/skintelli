@@ -4,18 +4,18 @@
   <meta charset="UTF-8">
   <title>Skintelli Antioxidant Score</title>
   <style>
-    body { font-family: system-ui, Arial, sans-serif; max-width: 700px; margin: 40px auto; }
+    body { font-family: system-ui, Arial, sans-serif; max-width: 680px; margin: 40px auto; }
     label { display: block; margin-bottom: .5rem; }
-    #out  { font-size: 1.4rem; margin-top: 1rem; }
-    #canvas { display: none; }
+    #out  { font-size: 1.4rem; margin-top: .8rem; }
   </style>
+  <!-- Pyodide for Python in browser -->
   <script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
+  <!-- Prepare OpenCV.js loading signal -->
   <script>
     window._opencvReady = false;
-    window.Module = {
-      onRuntimeInitialized: function() { window._opencvReady = true; }
-    };
+    window.Module = { onRuntimeInitialized: function() { window._opencvReady = true; } };
   </script>
+  <!-- OpenCV.js -->
   <script src="https://docs.opencv.org/4.x/opencv.js"></script>
 </head>
 <body>
@@ -25,39 +25,39 @@
     <input type="file" id="file" accept="image/*">
   </label>
   <div id="out">⏳ loading engine…</div>
-  <canvas id="canvas"></canvas>
   <script type="module">
     const out = document.getElementById('out');
     const show = msg => out.textContent = msg;
 
-    // --- 1. Wait for OpenCV.js ---
-    show('⏳ loading OpenCV…');
-    await new Promise(resolve => {
-      if (window._opencvReady) return resolve();
-      const check = setInterval(() => {
-        if (window._opencvReady) {
-          clearInterval(check);
-          resolve();
-        }
-      }, 20);
-    });
-    show('✅ OpenCV ready');
+    try {
+      // 1. Wait for OpenCV.js
+      show('⏳ loading OpenCV…');
+      await new Promise(resolve => {
+        if (window._opencvReady) return resolve();
+        const interval = setInterval(() => {
+          if (window._opencvReady) {
+            clearInterval(interval);
+            resolve();
+          }
+        }, 20);
+      });
+      show('✅ OpenCV ready');
 
-    // --- 2. Load Pyodide ---
-    show('⏳ loading Python…');
-    const py = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.25.1/full/" });
-    await py.loadPackage(['numpy', 'pandas', 'scikit-image']);
-    show('✅ Python ready');
+      // 2. Pyodide
+      show('⏳ loading Python…');
+      const py = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.25.1/full/" });
+      await py.loadPackage(['numpy', 'pandas', 'scikit-image']);
+      show('✅ Python ready');
 
-    // --- 3. Load CSV ---
-    show('⏳ loading reference table…');
-    const csvText = await fetch('trainingLab.csv').then(r => r.text());
-    py.FS.writeFile('/tmp/training.csv', csvText);
-    show('✅ Reference table loaded');
+      // 3. CSV
+      show('⏳ loading reference table…');
+      const csvText = await fetch('trainingLab.csv').then(r => r.text());
+      py.FS.writeFile('/tmp/training.csv', csvText);
+      show('✅ Reference table loaded');
 
-    // --- 4. Load Python scoring code (global) ---
-    show('⏳ compiling scorer…');
-    await py.runPythonAsync(`
+      // 4. Python scoring function (NO opencv import!)
+      show('⏳ compiling scorer…');
+      await py.runPythonAsync(`
 import numpy as np, pandas as pd
 from skimage.color import rgb2lab, deltaE_ciede2000 as dE
 
@@ -67,7 +67,8 @@ SCORES = df['score'].values
 
 def delta(l1, l2): return float(dE(l1[None], l2[None])[0])
 
-def calc_score(sample_lab, printed_labs):
+def global_calc_score(sample_lab, printed_labs):
+    # compare sample_lab to lookup table
     dists = np.array([delta(sample_lab, r) for r in LAB])
     if dists.min() <= 3:
         raw = SCORES[dists.argmin()]
@@ -75,55 +76,50 @@ def calc_score(sample_lab, printed_labs):
         wts = np.exp(-np.array([delta(sample_lab, p) for p in printed_labs]) / 2.5)
         raw = (wts * np.arange(6)).sum() / wts.sum()
     return round(np.clip(raw, 0, 5) * 4) / 4
+      `);
+      show('✅ Scorer ready — pick a photo.');
 
-global_calc_score = calc_score
-`);
-    show('✅ Scorer ready — pick a photo.');
+      // 5. File input handler
+      document.getElementById('file').addEventListener('change', async ev => {
+        try {
+          const f = ev.target.files[0];
+          if (!f) return;
+          show('🖼️ decoding & scoring…');
 
-    // --- 5. Handle image file ---
-    document.getElementById('file').addEventListener('change', async ev => {
-      const file = ev.target.files[0];
-      if (!file) return;
-      show('🖼️ decoding & scoring…');
+          // Load/decode image as OpenCV.js matrix
+          const buffer = await f.arrayBuffer();
+          const u8 = new Uint8Array(buffer);
+          const mat = cv.matFromArray(u8, 1);
+          const img = cv.imdecode(mat, cv.IMREAD_COLOR);
+          mat.delete();
 
-      // a. Load image in browser
-      const imgElem = new Image();
-      imgElem.src = URL.createObjectURL(file);
-      await new Promise(res => imgElem.onload = res);
+          // For demo: get average color of full image
+          let mean = cv.mean(img); // [b,g,r,alpha]
+          img.delete();
 
-      // b. Draw image to canvas
-      const canvas = document.getElementById('canvas');
-      canvas.width = imgElem.naturalWidth;
-      canvas.height = imgElem.naturalHeight;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(imgElem, 0, 0);
+          // Convert BGR to RGB for Python/skimage
+          let rgb = [mean[2], mean[1], mean[0]]; // [R,G,B]
 
-      // c. Read canvas to OpenCV.js Mat
-      let mat = cv.imread(canvas);
-
-      // Optional: crop/ROI if needed, else use the full image.
-      // For simplicity: sample color in the center 20% region
-      let w = mat.cols, h = mat.rows;
-      let x = Math.floor(w * 0.4), y = Math.floor(h * 0.4), ww = Math.floor(w * 0.2), hh = Math.floor(h * 0.2);
-      let roi = mat.roi(new cv.Rect(x, y, ww, hh));
-
-      // d. Compute mean BGR color in ROI
-      let mean = cv.mean(roi); // [b,g,r,alpha]
-      roi.delete(); mat.delete();
-
-      let rgb = [mean[2], mean[1], mean[0]]; // [R,G,B]
-
-      // --- 6. Score in Python ---
-      let score = await py.runPythonAsync(`
+          // Call Python code: pass array and use scorer
+          let score = await py.runPythonAsync(`
 from skimage.color import rgb2lab
 import numpy as np
 sample_rgb = np.array(${JSON.stringify(rgb)}) / 255.
 sample_lab = rgb2lab(sample_rgb[None,None,:]).reshape(3)
 printed_labs = [sample_lab for _ in range(6)]
-global_calc_score(sample_lab, printed_labs)
-      `);
-      show('✅ Antioxidant Score: ' + score);
-    });
+str(float(global_calc_score(sample_lab, printed_labs)))
+          `);
+
+          show('✅ Antioxidant Score: ' + score);
+        } catch (err) {
+          show('⚠️ ' + (err.message || err));
+          console.error(err);
+        }
+      });
+    } catch (err) {
+      show('⚠️ ' + (err.message || err));
+      console.error(err);
+    }
   </script>
 </body>
 </html>
