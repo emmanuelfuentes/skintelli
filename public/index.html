@@ -2,129 +2,46 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Skintelli Antioxidant Score</title>
+  <title>OpenCV.js imread Test</title>
   <style>
-    body { font-family: system-ui, Arial, sans-serif; max-width: 680px; margin: 40px auto; }
-    label { display: block; margin-bottom: .5rem; }
-    #out  { font-size: 1.4rem; margin-top: .8rem; }
+    body { font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto;}
     #input-img { display: none; }
   </style>
-  <!-- Pyodide -->
-  <script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
-  <!-- Signal OpenCV.js ready -->
   <script>
     window._opencvReady = false;
-    window.Module = { onRuntimeInitialized: function() { window._opencvReady = true; } };
+    window.Module = { onRuntimeInitialized: () => { window._opencvReady = true; } };
   </script>
-  <!-- OpenCV.js -->
-<script src="https://docs.opencv.org/4.x/opencv.js"></script>
+  <script src="https://docs.opencv.org/4.x/opencv.js"></script>
 </head>
 <body>
-  <h2>Skintelli Antioxidant Score</h2>
-  <label>
-    Choose card photo:
-    <input type="file" id="file" accept="image/*">
-  </label>
-  <img id="input-img" alt="uploaded" />
-  <div id="out">⏳ loading engine…</div>
-  <script type="module">
+  <h2>OpenCV.js imread Test</h2>
+  <input type="file" id="file" accept="image/*">
+  <img id="input-img" />
+  <pre id="out"></pre>
+  <script>
     const out = document.getElementById('out');
-    const show = msg => out.textContent = msg;
-
-    try {
-      // 1. Wait for OpenCV.js
-      show('⏳ loading OpenCV…');
-      await new Promise(resolve => {
-        if (window._opencvReady) return resolve();
-        const interval = setInterval(() => {
-          if (window._opencvReady) {
-            clearInterval(interval);
-            resolve();
-          }
-        }, 20);
-      });
-      show('✅ OpenCV ready');
-
-      // 2. Pyodide
-      show('⏳ loading Python…');
-      const py = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.25.1/full/" });
-      await py.loadPackage(['numpy', 'pandas', 'scikit-image']);
-      show('✅ Python ready');
-
-      // 3. CSV
-      show('⏳ loading reference table…');
-      const csvText = await fetch('trainingLab.csv').then(r => r.text());
-      py.FS.writeFile('/tmp/training.csv', csvText);
-      show('✅ Reference table loaded');
-
-      // 4. Python scoring function (NO opencv import!)
-      show('⏳ compiling scorer…');
-      await py.runPythonAsync(`
-import numpy as np, pandas as pd
-from skimage.color import rgb2lab, deltaE_ciede2000 as dE
-
-df     = pd.read_csv('/tmp/training.csv')
-LAB    = df[['L','a','b']].values
-SCORES = df['score'].values
-
-def delta(l1, l2): return float(dE(l1[None], l2[None])[0])
-
-def global_calc_score(sample_lab, printed_labs):
-    dists = np.array([delta(sample_lab, r) for r in LAB])
-    if dists.min() <= 3:
-        raw = SCORES[dists.argmin()]
-    else:
-        wts = np.exp(-np.array([delta(sample_lab, p) for p in printed_labs]) / 2.5)
-        raw = (wts * np.arange(6)).sum() / wts.sum()
-    return round(np.clip(raw, 0, 5) * 4) / 4
-      `);
-      show('✅ Scorer ready — pick a photo.');
-
-      // 5. File input handler (NO cv.matFromArray!)
-      document.getElementById('file').addEventListener('change', async ev => {
-        try {
-          const f = ev.target.files[0];
-          if (!f) return;
-          show('🖼️ decoding & scoring…');
-
-          // Use FileReader and <img> for OpenCV.js
-          const imgTag = document.getElementById('input-img');
-          const url = URL.createObjectURL(f);
-          imgTag.src = url;
-
-          // Wait for image to load
-          await new Promise(res => { imgTag.onload = res; });
-
-          // Read to cv.Mat
-          let img = cv.imread(imgTag);
-
-          // For demo: get average color of full image
-          let mean = cv.mean(img); // [b,g,r,alpha]
-          img.delete();
-
-          // Convert BGR to RGB for Python/skimage
-          let rgb = [mean[2], mean[1], mean[0]]; // [R,G,B]
-
-          // Call Python code: pass array and use scorer
-          let score = await py.runPythonAsync(`
-from skimage.color import rgb2lab
-import numpy as np
-sample_rgb = np.array(${JSON.stringify(rgb)}) / 255.
-sample_lab = rgb2lab(sample_rgb[None,None,:]).reshape(3)
-printed_labs = [sample_lab for _ in range(6)]
-str(float(global_calc_score(sample_lab, printed_labs)))
-          `);
-
-          show('✅ Antioxidant Score: ' + score);
-        } catch (err) {
-          show('⚠️ ' + (err.message || err));
-          console.error(err);
-        }
-      });
-    } catch (err) {
-      show('⚠️ ' + (err.message || err));
-      console.error(err);
+    out.textContent = "Loading OpenCV.js...";
+    async function waitOpenCV() {
+      while (!window._opencvReady || !window.cv || !cv.imread) await new Promise(r => setTimeout(r, 20));
     }
+    waitOpenCV().then(() => {
+      out.textContent = "OpenCV.js ready!";
+      document.getElementById('file').addEventListener('change', ev => {
+        const file = ev.target.files[0];
+        if (!file) return;
+        const img = document.getElementById('input-img');
+        img.onload = function() {
+          try {
+            let mat = cv.imread(img);
+            out.textContent = `Loaded image: ${mat.rows}x${mat.cols}`;
+            mat.delete();
+          } catch (e) {
+            out.textContent = "Error: " + e;
+          }
+        };
+        img.src = URL.createObjectURL(file);
+      });
+    });
   </script>
 </body>
 </html>
