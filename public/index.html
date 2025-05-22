@@ -2,109 +2,32 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Skintelli Antioxidant Score</title>
+  <title>OpenCV.js Loader Test</title>
   <style>
     body { font-family: system-ui, Arial, sans-serif; max-width: 680px; margin: 40px auto; }
-    label { display: block; margin-bottom: .5rem; }
-    #out  { font-size: 1.4rem; margin-top: .8rem; }
-    #canvas { display: none; }
+    #msg { font-size: 1.7rem; margin-top: 2.5rem; }
   </style>
-  <!-- Pyodide for Python -->
-  <script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
-  <!-- OpenCV.js -->
+  <!-- NO async/defer/module! -->
   <script src="https://docs.opencv.org/4.x/opencv.js"></script>
 </head>
 <body>
-  <h2>Skintelli Antioxidant Score</h2>
-  <label>
-    Choose card photo:
-    <input type="file" id="file" accept="image/*">
-  </label>
-  <div id="out">⏳ loading engine…</div>
-  <canvas id="canvas"></canvas>
-  <script type="module">
-    const out = document.getElementById('out');
-    const show = msg => out.textContent = msg;
-    show('⏳ loading OpenCV…');
-    // Wait for OpenCV.js to load
-    await new Promise(resolve => {
-      if (cv && cv.getBuildInformation) return resolve();
-      window.Module = { onRuntimeInitialized: resolve };
-    });
-    show('✅ OpenCV ready');
-
-    // Load Pyodide
-    show('⏳ loading Python…');
-    const py = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.25.1/full/" });
-    await py.loadPackage(['numpy', 'pandas', 'scikit-image']);
-    show('✅ Python ready');
-
-    // Load CSV reference table
-    show('⏳ loading reference table…');
-    const csvText = await fetch('trainingLab.csv').then(r => r.text());
-    py.FS.writeFile('/tmp/training.csv', csvText);
-    show('✅ Reference table loaded');
-
-    // Python scorer: ONLY NumPy/Skimage!
-    await py.runPythonAsync(`
-import numpy as np, pandas as pd
-from skimage.color import rgb2lab, deltaE_ciede2000 as dE
-df     = pd.read_csv('/tmp/training.csv')
-LAB    = df[['L','a','b']].values
-SCORES = df['score'].values
-def delta(l1, l2): return float(dE(l1[None], l2[None])[0])
-def calc_score(sample_lab, printed_labs):
-    dists = np.array([delta(sample_lab, r) for r in LAB])
-    if dists.min() <= 3:
-        raw = SCORES[dists.argmin()]
-    else:
-        wts = np.exp(-np.array([delta(sample_lab, p) for p in printed_labs]) / 2.5)
-        raw = (wts * np.arange(6)).sum() / wts.sum()
-    return round(np.clip(raw, 0, 5) * 4) / 4
-    `);
-    show('✅ Scorer ready — pick a photo.');
-
-    // --- File input handler ---
-    document.getElementById('file').addEventListener('change', async ev => {
-      const f = ev.target.files[0];
-      if (!f) return;
-      show('🖼️ decoding & scoring…');
-
-      // Read as DataURL
-      const reader = new FileReader();
-      reader.onload = async e => {
-        const imgTag = document.createElement('img');
-        imgTag.onload = async () => {
-          // Draw image to canvas
-          const canvas = document.getElementById('canvas');
-          canvas.width = imgTag.naturalWidth;
-          canvas.height = imgTag.naturalHeight;
-          const ctx = canvas.getContext('2d');
-          ctx.drawImage(imgTag, 0, 0);
-          // Read as OpenCV.js Mat
-          let img = cv.imread(canvas);
-          // --- Here you do OpenCV.js processing! ---
-          // For now, just mean color of the image (demo)
-          let mean = cv.mean(img); // [b,g,r,alpha]
-          img.delete();
-
-          let rgb = [mean[2], mean[1], mean[0]]; // [R,G,B]
-
-          // Call Python
-          let score = await py.runPythonAsync(`
-from skimage.color import rgb2lab
-import numpy as np
-sample_rgb = np.array(${JSON.stringify(rgb)}) / 255.
-sample_lab = rgb2lab(sample_rgb[None,None,:]).reshape(3)
-printed_labs = [sample_lab for _ in range(6)]
-calc_score(sample_lab, printed_labs)
-          `);
-          show('✅ Antioxidant Score: ' + score);
-        };
-        imgTag.src = e.target.result;
-      };
-      reader.readAsDataURL(f);
-    });
+  <h2>OpenCV.js Loader Test</h2>
+  <div id="msg">⏳ loading OpenCV...</div>
+  <script>
+    // Always set this BEFORE OpenCV loads, but in practice we check after load as well
+    window.Module = {
+      onRuntimeInitialized() {
+        document.getElementById('msg').textContent =
+          '✅ OpenCV.js loaded: ' + (cv && cv.getBuildInformation ? 'Yes' : 'No');
+      }
+    };
+    // Fallback for rare case (hot reload or double load)
+    setTimeout(() => {
+      if (window.cv && cv.getBuildInformation) {
+        document.getElementById('msg').textContent =
+          '✅ OpenCV.js loaded: Yes';
+      }
+    }, 5000);
   </script>
 </body>
 </html>
