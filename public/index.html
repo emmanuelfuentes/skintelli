@@ -2,66 +2,122 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>OpenCV.js imread Test</title>
+  <title>Skintelli Antioxidant Score</title>
   <style>
-    body { font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto;}
-    #input-img { display: none; }
-    #out { font-size: 1.3rem; margin-top: 1.5rem; }
+    body { font-family: system-ui, Arial, sans-serif; max-width: 680px; margin: 40px auto; }
+    label { display: block; margin-bottom: .5rem; }
+    #out  { font-size: 1.4rem; margin-top: .8rem; }
   </style>
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
   <script>
-    // Ensures window._opencvReady becomes true when OpenCV.js is initialized
     window._opencvReady = false;
-    window.Module = { onRuntimeInitialized: function() { window._opencvReady = true; } };
+    window.Module = {
+      onRuntimeInitialized: function() {
+        window._opencvReady = true;
+      }
+    };
   </script>
   <script src="https://docs.opencv.org/4.x/opencv.js"></script>
 </head>
 <body>
-  <h2>OpenCV.js imread Test</h2>
-  <input type="file" id="file" accept="image/*">
-  <img id="input-img" />
-  <div id="out">Loading OpenCV.js...</div>
-  <script>
+  <h2>Skintelli Antioxidant Score</h2>
+  <label>
+    Choose card photo:
+    <input type="file" id="file" accept="image/*">
+  </label>
+  <div id="out">⏳ loading engine…</div>
+  <script type="module">
     const out = document.getElementById('out');
-    const img = document.getElementById('input-img');
+    const show = msg => out.textContent = msg;
 
-    // Wait for OpenCV.js to load
-    function waitOpenCV() {
-      return new Promise(resolve => {
-        const check = () => {
-          if (window._opencvReady && window.cv && cv.imread) resolve();
-          else setTimeout(check, 30);
-        };
-        check();
-      });
-    }
-
-    waitOpenCV().then(() => {
-      out.textContent = "✅ OpenCV.js ready! Upload an image.";
-      document.getElementById('file').addEventListener('change', ev => {
-        const file = ev.target.files[0];
-        if (!file) return;
-        img.onload = function() {
-          try {
-            let mat = cv.imread(img);
-            out.textContent = `Image loaded! Size: ${mat.rows} x ${mat.cols}`;
-            mat.delete();
-          } catch (e) {
-            out.textContent = "❌ Error: " + e.message;
-          }
-        };
-        img.onerror = function() {
-          out.textContent = "❌ Couldn't load image in browser.";
-        };
-        img.src = URL.createObjectURL(file);
-      });
-    }).catch(() => {
-      out.textContent = "❌ OpenCV.js did not load. Check your network connection or the CDN URL.";
+    show('⏳ loading OpenCV…');
+    await new Promise(resolve => {
+      if (window._opencvReady) return resolve();
+      const interval = setInterval(() => {
+        if (window._opencvReady) {
+          clearInterval(interval);
+          resolve();
+        }
+      }, 20);
     });
+    show('✅ OpenCV ready');
 
-    // Optional: show a message if not loaded after 5 seconds
-    setTimeout(() => {
-      if (!window._opencvReady) out.textContent = "❌ OpenCV.js still not loaded after 5 seconds.";
-    }, 5000);
+    // ---- Pyodide ----
+    show('⏳ loading Python…');
+    const py = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.25.1/full/" });
+    await py.loadPackage(['numpy', 'pandas', 'scikit-image']);
+    show('✅ Python ready');
+
+    // ---- CSV ----
+    show('⏳ loading reference table…');
+    const csvText = await fetch('trainingLab.csv').then(r => r.text());
+    py.FS.writeFile('/tmp/training.csv', csvText);
+    show('✅ Reference table loaded');
+
+    // ---- Python scorer (NO opencv import!) ----
+    show('⏳ compiling scorer…');
+    await py.runPythonAsync(`
+import numpy as np, pandas as pd
+from skimage.color import rgb2lab, deltaE_ciede2000 as dE
+
+df     = pd.read_csv('/tmp/training.csv')
+LAB    = df[['L','a','b']].values
+SCORES = df['score'].values
+
+def delta(l1, l2): return float(dE(l1[None], l2[None])[0])
+
+def calc_score(sample_lab, printed_labs):
+    # compare sample_lab to lookup table
+    dists = np.array([delta(sample_lab, r) for r in LAB])
+    if dists.min() <= 3:
+        raw = SCORES[dists.argmin()]
+    else:
+        wts = np.exp(-np.array([delta(sample_lab, p) for p in printed_labs]) / 2.5)
+        raw = (wts * np.arange(6)).sum() / wts.sum()
+    return round(np.clip(raw, 0, 5) * 4) / 4
+    `);
+    show('✅ Scorer ready — pick a photo.');
+
+    // ---- File input handler ----
+    document.getElementById('file').addEventListener('change', async ev => {
+      const f = ev.target.files[0];
+      if (!f) return;
+      show('🖼️ decoding & scoring…');
+
+      // Load/decode image as OpenCV.js matrix
+      // ERROR HAPPENS HERE! matFromArray is not available.
+      // We need to switch to imread from an <img> tag
+
+      // --- FIX: Use HTMLImageElement and cv.imread ---
+      const img = document.createElement('img');
+      img.onload = async function() {
+        try {
+          let mat = cv.imread(img);
+          // Calculate mean color as a test (replace this with your ROI/color patch logic)
+          let mean = cv.mean(mat); // [b,g,r,alpha]
+          mat.delete();
+
+          // Convert BGR to RGB for Python/skimage
+          let rgb = [mean[2], mean[1], mean[0]]; // [R,G,B]
+
+          let score = await py.runPythonAsync(`
+from skimage.color import rgb2lab
+import numpy as np
+sample_rgb = np.array(${JSON.stringify(rgb)}) / 255.
+sample_lab = rgb2lab(sample_rgb[None,None,:]).reshape(3)
+printed_labs = [sample_lab for _ in range(6)]
+calc_score(sample_lab, printed_labs)
+          `);
+          show('✅ Antioxidant Score: ' + score);
+        } catch (e) {
+          show("⚠️ " + e.message);
+        }
+      };
+      img.onerror = function() {
+        show("⚠️ Couldn't load image");
+      };
+      img.src = URL.createObjectURL(f);
+    });
   </script>
 </body>
 </html>
