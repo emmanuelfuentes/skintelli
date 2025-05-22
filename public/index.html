@@ -55,7 +55,7 @@
     py.FS.writeFile('/tmp/training.csv', csvText);
     show('✅ Reference table loaded');
 
-    // --- 4. Load Python scoring code ---
+    // --- 4. Load Python scoring code (global) ---
     show('⏳ compiling scorer…');
     await py.runPythonAsync(`
 import numpy as np, pandas as pd
@@ -75,7 +75,9 @@ def calc_score(sample_lab, printed_labs):
         wts = np.exp(-np.array([delta(sample_lab, p) for p in printed_labs]) / 2.5)
         raw = (wts * np.arange(6)).sum() / wts.sum()
     return round(np.clip(raw, 0, 5) * 4) / 4
-    `);
+
+global_calc_score = calc_score
+`);
     show('✅ Scorer ready — pick a photo.');
 
     // --- 5. Handle image file ---
@@ -110,6 +112,7 @@ def calc_score(sample_lab, printed_labs):
       roi.delete(); mat.delete();
 
       let rgb = [mean[2], mean[1], mean[0]]; // [R,G,B]
+
       // --- 6. Score in Python ---
       let score = await py.runPythonAsync(`
 from skimage.color import rgb2lab
@@ -117,7 +120,7 @@ import numpy as np
 sample_rgb = np.array(${JSON.stringify(rgb)}) / 255.
 sample_lab = rgb2lab(sample_rgb[None,None,:]).reshape(3)
 printed_labs = [sample_lab for _ in range(6)]
-calc_score(sample_lab, printed_labs)
+global_calc_score(sample_lab, printed_labs)
       `);
       show('✅ Antioxidant Score: ' + score);
     });
