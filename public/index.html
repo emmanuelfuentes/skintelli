@@ -8,9 +8,9 @@
     label { display: block; margin-bottom: .5rem; }
     #out  { font-size: 1.4rem; margin-top: .8rem; }
   </style>
-  <!-- Pyodide (Python in browser) -->
+  <!-- 1. Pyodide for Python in browser -->
   <script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
-  <!-- OpenCV.js: official CDN, must use Module.onRuntimeInitialized for ready -->
+  <!-- 2. OpenCV.js: NO async, NO defer, NO onload, NO module! -->
   <script src="https://docs.opencv.org/4.x/opencv.js"></script>
 </head>
 <body>
@@ -20,17 +20,19 @@
     <input type="file" id="file" accept="image/*">
   </label>
   <div id="out">⏳ loading engine…</div>
+
   <script type="module">
     const out = document.getElementById('out');
     const show = msg => out.textContent = msg;
 
     show('⏳ loading OpenCV…');
-    // ---- Wait for OpenCV.js using the canonical onRuntimeInitialized ----
+    // ---- Wait for OpenCV.js using canonical onRuntimeInitialized ----
     await new Promise(resolve => {
-      // OpenCV.js will set window.Module if not already set
+      // If OpenCV is already loaded (rare reload), continue
       if (window.cv && cv.getBuildInformation) return resolve();
-      window.Module = { 
-        onRuntimeInitialized: () => {
+      // Otherwise, set up the required callback BEFORE opencv.js is done loading
+      window.Module = {
+        onRuntimeInitialized() {
           show('✅ OpenCV ready');
           resolve();
         }
