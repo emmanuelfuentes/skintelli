@@ -7,18 +7,23 @@
     body { font-family: system-ui, Arial, sans-serif; max-width: 680px; margin: 40px auto; }
     label { display: block; margin-bottom: .5rem; }
     #out  { font-size: 1.4rem; margin-top: .8rem; }
+    #input-img { display: none; }
   </style>
+
+  <!-- Pyodide -->
   <script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
+
+  <!-- signal for OpenCV.js -->
   <script>
     window._opencvReady = false;
-    window.Module = {
-      onRuntimeInitialized: function() {
-        window._opencvReady = true;
-      }
-    };
+    window.Module = { onRuntimeInitialized: () => { window._opencvReady = true; } };
   </script>
- <!-- Option A: official 4.5.5 full build via jsDelivr -->
-<script src="https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.5.5/opencv.js"></script>
+
+  <!-- FULL OpenCV.js build (Option A) -->
+  <script src="https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.5.5/opencv.js"></script>
+  <!-- ↑ or use Option B: 
+  <script src="https://rawcdn.githack.com/opencv/opencv/3.4.0/platforms/js/opencv.js"></script>
+  -->
 </head>
 <body>
   <h2>Skintelli Antioxidant Score</h2>
@@ -26,49 +31,49 @@
     Choose card photo:
     <input type="file" id="file" accept="image/*">
   </label>
+  <img id="input-img" />
   <div id="out">⏳ loading engine…</div>
+
   <script type="module">
     const out = document.getElementById('out');
     const show = msg => out.textContent = msg;
 
-    show('⏳ loading OpenCV…');
-    await new Promise(resolve => {
-      if (window._opencvReady) return resolve();
-      const interval = setInterval(() => {
-        if (window._opencvReady) {
-          clearInterval(interval);
-          resolve();
-        }
-      }, 20);
-    });
-    show('✅ OpenCV ready');
+    try {
+      // 1) Wait for OpenCV.js
+      show('⏳ loading OpenCV…');
+      await new Promise(resolve => {
+        if (_opencvReady && cv && cv.imread) return resolve();
+        const check = setInterval(() => {
+          if (_opencvReady && cv && cv.imread) {
+            clearInterval(check);
+            resolve();
+          }
+        }, 20);
+      });
+      show('✅ OpenCV ready');
 
-    // ---- Pyodide ----
-    show('⏳ loading Python…');
-    const py = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.25.1/full/" });
-    await py.loadPackage(['numpy', 'pandas', 'scikit-image']);
-    show('✅ Python ready');
+      // 2) Load Pyodide + packages
+      show('⏳ loading Python…');
+      const py = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.25.1/full/" });
+      await py.loadPackage(['numpy','pandas','scikit-image']);
+      show('✅ Python ready');
 
-    // ---- CSV ----
-    show('⏳ loading reference table…');
-    const csvText = await fetch('trainingLab.csv').then(r => r.text());
-    py.FS.writeFile('/tmp/training.csv', csvText);
-    show('✅ Reference table loaded');
+      // 3) Load your CSV lookup
+      show('⏳ loading reference table…');
+      const csvText = await fetch('trainingLab.csv').then(r => r.text());
+      py.FS.writeFile('/tmp/training.csv', csvText);
+      show('✅ Reference table loaded');
 
-    // ---- Python scorer (NO opencv import!) ----
-    show('⏳ compiling scorer…');
-    await py.runPythonAsync(`
+      // 4) Define scoring function in Python
+      show('⏳ compiling scorer…');
+      await py.runPythonAsync(`
 import numpy as np, pandas as pd
 from skimage.color import rgb2lab, deltaE_ciede2000 as dE
-
 df     = pd.read_csv('/tmp/training.csv')
 LAB    = df[['L','a','b']].values
 SCORES = df['score'].values
-
 def delta(l1, l2): return float(dE(l1[None], l2[None])[0])
-
-def calc_score(sample_lab, printed_labs):
-    # compare sample_lab to lookup table
+def global_calc_score(sample_lab, printed_labs):
     dists = np.array([delta(sample_lab, r) for r in LAB])
     if dists.min() <= 3:
         raw = SCORES[dists.argmin()]
@@ -76,49 +81,44 @@ def calc_score(sample_lab, printed_labs):
         wts = np.exp(-np.array([delta(sample_lab, p) for p in printed_labs]) / 2.5)
         raw = (wts * np.arange(6)).sum() / wts.sum()
     return round(np.clip(raw, 0, 5) * 4) / 4
-    `);
-    show('✅ Scorer ready — pick a photo.');
+      `);
+      show('✅ Scorer ready — pick a photo.');
 
-    // ---- File input handler ----
-    document.getElementById('file').addEventListener('change', async ev => {
-      const f = ev.target.files[0];
-      if (!f) return;
-      show('🖼️ decoding & scoring…');
+      // 5) Handle file upload
+      document.getElementById('file').addEventListener('change', async e => {
+        const f = e.target.files[0];
+        if (!f) return show('⚠️ No file selected');
 
-      // Load/decode image as OpenCV.js matrix
-      // ERROR HAPPENS HERE! matFromArray is not available.
-      // We need to switch to imread from an <img> tag
+        show('🖼️ decoding & scoring…');
+        // load into <img>
+        const imgTag = document.getElementById('input-img');
+        imgTag.src = URL.createObjectURL(f);
+        await new Promise(res => imgTag.onload = res);
 
-      // --- FIX: Use HTMLImageElement and cv.imread ---
-      const img = document.createElement('img');
-      img.onload = async function() {
-        try {
-          let mat = cv.imread(img);
-          // Calculate mean color as a test (replace this with your ROI/color patch logic)
-          let mean = cv.mean(mat); // [b,g,r,alpha]
-          mat.delete();
+        // read via OpenCV.js
+        let mat = cv.imread(imgTag);
+        // for demo: get average full-image color
+        let mean = cv.mean(mat); 
+        mat.delete();
 
-          // Convert BGR to RGB for Python/skimage
-          let rgb = [mean[2], mean[1], mean[0]]; // [R,G,B]
-
-          let score = await py.runPythonAsync(`
+        let rgb = [ mean[2], mean[1], mean[0] ];  // [R,G,B]
+        // score in Python
+        let score = await py.runPythonAsync(`
 from skimage.color import rgb2lab
 import numpy as np
-sample_rgb = np.array(${JSON.stringify(rgb)}) / 255.
+sample_rgb = np.array(${JSON.stringify(rgb)}) / 255.0
 sample_lab = rgb2lab(sample_rgb[None,None,:]).reshape(3)
 printed_labs = [sample_lab for _ in range(6)]
-calc_score(sample_lab, printed_labs)
-          `);
-          show('✅ Antioxidant Score: ' + score);
-        } catch (e) {
-          show("⚠️ " + e.message);
-        }
-      };
-      img.onerror = function() {
-        show("⚠️ Couldn't load image");
-      };
-      img.src = URL.createObjectURL(f);
-    });
+str(float(global_calc_score(sample_lab, printed_labs)))
+        `);
+
+        show('✅ Antioxidant Score: ' + score);
+      });
+    }
+    catch(err) {
+      console.error(err);
+      show('⚠️ ' + err.message);
+    }
   </script>
 </body>
 </html>
