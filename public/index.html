@@ -6,10 +6,12 @@
   <style>
     body { font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto;}
     #input-img { display: none; }
+    #out { font-size: 1.3rem; margin-top: 1.5rem; }
   </style>
   <script>
+    // Ensures window._opencvReady becomes true when OpenCV.js is initialized
     window._opencvReady = false;
-    window.Module = { onRuntimeInitialized: () => { window._opencvReady = true; } };
+    window.Module = { onRuntimeInitialized: function() { window._opencvReady = true; } };
   </script>
   <script src="https://docs.opencv.org/4.x/opencv.js"></script>
 </head>
@@ -17,31 +19,49 @@
   <h2>OpenCV.js imread Test</h2>
   <input type="file" id="file" accept="image/*">
   <img id="input-img" />
-  <pre id="out"></pre>
+  <div id="out">Loading OpenCV.js...</div>
   <script>
     const out = document.getElementById('out');
-    out.textContent = "Loading OpenCV.js...";
-    async function waitOpenCV() {
-      while (!window._opencvReady || !window.cv || !cv.imread) await new Promise(r => setTimeout(r, 20));
+    const img = document.getElementById('input-img');
+
+    // Wait for OpenCV.js to load
+    function waitOpenCV() {
+      return new Promise(resolve => {
+        const check = () => {
+          if (window._opencvReady && window.cv && cv.imread) resolve();
+          else setTimeout(check, 30);
+        };
+        check();
+      });
     }
+
     waitOpenCV().then(() => {
-      out.textContent = "OpenCV.js ready!";
+      out.textContent = "✅ OpenCV.js ready! Upload an image.";
       document.getElementById('file').addEventListener('change', ev => {
         const file = ev.target.files[0];
         if (!file) return;
-        const img = document.getElementById('input-img');
         img.onload = function() {
           try {
             let mat = cv.imread(img);
-            out.textContent = `Loaded image: ${mat.rows}x${mat.cols}`;
+            out.textContent = `Image loaded! Size: ${mat.rows} x ${mat.cols}`;
             mat.delete();
           } catch (e) {
-            out.textContent = "Error: " + e;
+            out.textContent = "❌ Error: " + e.message;
           }
+        };
+        img.onerror = function() {
+          out.textContent = "❌ Couldn't load image in browser.";
         };
         img.src = URL.createObjectURL(file);
       });
+    }).catch(() => {
+      out.textContent = "❌ OpenCV.js did not load. Check your network connection or the CDN URL.";
     });
+
+    // Optional: show a message if not loaded after 5 seconds
+    setTimeout(() => {
+      if (!window._opencvReady) out.textContent = "❌ OpenCV.js still not loaded after 5 seconds.";
+    }, 5000);
   </script>
 </body>
 </html>
