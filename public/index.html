@@ -10,7 +10,16 @@
   </style>
   <!-- 1. Pyodide for Python in browser -->
   <script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
-  <!-- 2. OpenCV.js: NO async, NO defer, NO onload, NO module! -->
+  <!-- 2. Set up Module for OpenCV.js (BEFORE loading the script!) -->
+  <script>
+    window._opencvReady = false;
+    window.Module = {
+      onRuntimeInitialized: function() {
+        window._opencvReady = true;
+      }
+    };
+  </script>
+  <!-- 3. OpenCV.js: NO async, NO defer, NO onload, NO module! -->
   <script src="https://docs.opencv.org/4.x/opencv.js"></script>
 </head>
 <body>
@@ -26,18 +35,17 @@
     const show = msg => out.textContent = msg;
 
     show('⏳ loading OpenCV…');
-    // ---- Wait for OpenCV.js using canonical onRuntimeInitialized ----
+    // Wait for OpenCV.js global flag
     await new Promise(resolve => {
-      // If OpenCV is already loaded (rare reload), continue
-      if (window.cv && cv.getBuildInformation) return resolve();
-      // Otherwise, set up the required callback BEFORE opencv.js is done loading
-      window.Module = {
-        onRuntimeInitialized() {
-          show('✅ OpenCV ready');
+      if (window._opencvReady) return resolve();
+      const interval = setInterval(() => {
+        if (window._opencvReady) {
+          clearInterval(interval);
           resolve();
         }
-      };
+      }, 20);
     });
+    show('✅ OpenCV ready');
 
     try {
       // ---- Pyodide ----
