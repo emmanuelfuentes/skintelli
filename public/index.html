@@ -2,32 +2,115 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>OpenCV.js Loader Test</title>
+  <title>Skintelli Antioxidant Score</title>
   <style>
     body { font-family: system-ui, Arial, sans-serif; max-width: 680px; margin: 40px auto; }
-    #msg { font-size: 1.7rem; margin-top: 2.5rem; }
+    label { display: block; margin-bottom: .5rem; }
+    #out  { font-size: 1.4rem; margin-top: .8rem; }
   </style>
-  <!-- NO async/defer/module! -->
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
+  <script>
+    window._opencvReady = false;
+    window.Module = {
+      onRuntimeInitialized: function() {
+        window._opencvReady = true;
+      }
+    };
+  </script>
   <script src="https://docs.opencv.org/4.x/opencv.js"></script>
 </head>
 <body>
-  <h2>OpenCV.js Loader Test</h2>
-  <div id="msg">⏳ loading OpenCV...</div>
-  <script>
-    // Always set this BEFORE OpenCV loads, but in practice we check after load as well
-    window.Module = {
-      onRuntimeInitialized() {
-        document.getElementById('msg').textContent =
-          '✅ OpenCV.js loaded: ' + (cv && cv.getBuildInformation ? 'Yes' : 'No');
-      }
-    };
-    // Fallback for rare case (hot reload or double load)
-    setTimeout(() => {
-      if (window.cv && cv.getBuildInformation) {
-        document.getElementById('msg').textContent =
-          '✅ OpenCV.js loaded: Yes';
-      }
-    }, 5000);
+  <h2>Skintelli Antioxidant Score</h2>
+  <label>
+    Choose card photo:
+    <input type="file" id="file" accept="image/*">
+  </label>
+  <div id="out">⏳ loading engine…</div>
+  <script type="module">
+    const out = document.getElementById('out');
+    const show = msg => out.textContent = msg;
+
+    show('⏳ loading OpenCV…');
+    await new Promise(resolve => {
+      if (window._opencvReady) return resolve();
+      const interval = setInterval(() => {
+        if (window._opencvReady) {
+          clearInterval(interval);
+          resolve();
+        }
+      }, 20);
+    });
+    show('✅ OpenCV ready');
+
+    // ---- Pyodide ----
+    show('⏳ loading Python…');
+    const py = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.25.1/full/" });
+    await py.loadPackage(['numpy', 'pandas', 'scikit-image']);
+    show('✅ Python ready');
+
+    // ---- CSV ----
+    show('⏳ loading reference table…');
+    const csvText = await fetch('trainingLab.csv').then(r => r.text());
+    py.FS.writeFile('/tmp/training.csv', csvText);
+    show('✅ Reference table loaded');
+
+    // ---- Python scorer (NO opencv import!) ----
+    show('⏳ compiling scorer…');
+    await py.runPythonAsync(`
+import numpy as np, pandas as pd
+from skimage.color import rgb2lab, deltaE_ciede2000 as dE
+
+df     = pd.read_csv('/tmp/training.csv')
+LAB    = df[['L','a','b']].values
+SCORES = df['score'].values
+
+def delta(l1, l2): return float(dE(l1[None], l2[None])[0])
+
+def calc_score(sample_lab, printed_labs):
+    # compare sample_lab to lookup table
+    dists = np.array([delta(sample_lab, r) for r in LAB])
+    if dists.min() <= 3:
+        raw = SCORES[dists.argmin()]
+    else:
+        wts = np.exp(-np.array([delta(sample_lab, p) for p in printed_labs]) / 2.5)
+        raw = (wts * np.arange(6)).sum() / wts.sum()
+    return round(np.clip(raw, 0, 5) * 4) / 4
+    `);
+    show('✅ Scorer ready — pick a photo.');
+
+    // ---- File input handler ----
+    document.getElementById('file').addEventListener('change', async ev => {
+      const f = ev.target.files[0];
+      if (!f) return;
+      show('🖼️ decoding & scoring…');
+
+      // Load/decode image as OpenCV.js matrix
+      const buffer = await f.arrayBuffer();
+      const u8 = new Uint8Array(buffer);
+      const mat = cv.matFromArray(u8, 1);
+      const img = cv.imdecode(mat, cv.IMREAD_COLOR);
+      mat.delete();
+
+      // --- Your OpenCV.js: crop, warp, extract color patches as needed here! ---
+      // For demo: get average color of full image
+      let mean = cv.mean(img); // [b,g,r,alpha]
+      img.delete();
+
+      // Convert BGR to RGB for Python/skimage
+      let rgb = [mean[2], mean[1], mean[0]]; // [R,G,B]
+
+      // --- Call Python code: pass array and use scorer ---
+      // Use skimage's rgb2lab and scoring
+      let score = await py.runPythonAsync(`
+from skimage.color import rgb2lab
+import numpy as np
+sample_rgb = np.array(${JSON.stringify(rgb)}) / 255.
+sample_lab = rgb2lab(sample_rgb[None,None,:]).reshape(3)
+printed_labs = [sample_lab for _ in range(6)]
+calc_score(sample_lab, printed_labs)
+      `);
+      show('✅ Antioxidant Score: ' + score);
+    });
   </script>
 </body>
 </html>
