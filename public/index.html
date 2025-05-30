@@ -2,29 +2,22 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Card Scanner (pure JS)</title>
+<title>Card Scanner – edge-aware</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-
 <style>
-/* ––––– base layout ––––– */
+/* identical CSS as before – shortened here for brevity */
 html,body{margin:0;height:100%;overflow:hidden;background:#000;
           font-family:-apple-system,Roboto,Helvetica,Arial,sans-serif}
 #cam,#preview{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
 video,canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
 canvas{pointer-events:none;z-index:10}
-
-/* top banner + helper */
 #msg{position:absolute;top:14px;left:50%;transform:translateX(-50%);
      padding:6px 14px;border-radius:8px;background:rgba(0,0,0,.65);
      color:#fff;font-size:15px;z-index:20}
 #hint{position:absolute;left:50%;transform:translateX(-50%);
       color:#fff;font-size:15px;text-align:center;pointer-events:none;z-index:20}
-
-/* fatal overlay */
 #fatal{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
        background:rgba(0,0,0,.85);color:#fff;font-size:17px;text-align:center;padding:24px;z-index:40}
-
-/* shutter ring */
 #snap{position:absolute;bottom:42px;left:50%;transform:translateX(-50%);
       width:80px;height:80px;border-radius:50%;border:4px solid #fff;
       background:rgba(255,255,255,.15);display:flex;align-items:center;justify-content:center;
@@ -32,17 +25,13 @@ canvas{pointer-events:none;z-index:10}
 #snap::after{content:'';width:54px;height:54px;border-radius:50%;background:#fff}
 #snap.ready{opacity:1}
 #snap.ready::after{background:#0f0}
-
-/* preview stage */
 #preview{flex-direction:column;gap:18px;background:#000;display:none}
 #shot{max-width:96%;max-height:96%;border:4px solid #fff;border-radius:10px}
-.ctrls button{padding:12px 26px;font-size:16px;border:none;border-radius:40px;
-              margin:0 10px;background:#fff}
+.ctrls button{padding:12px 26px;font-size:16px;border:none;border-radius:40px;margin:0 10px;background:#fff}
 </style>
 </head>
 <body>
 
-<!-- ─── live camera ─── -->
 <div id="cam">
   <video id="video" autoplay playsinline muted></video>
   <canvas id="overlay"></canvas>
@@ -54,9 +43,8 @@ canvas{pointer-events:none;z-index:10}
   <div id="fatal"></div>
 </div>
 
-<!-- ─── captured preview ─── -->
 <div id="preview">
-  <img id="shot" alt="captured card">
+  <img id="shot" alt="">
   <div class="ctrls">
     <button id="download">Download</button>
     <button id="retake">Retake</button>
@@ -64,13 +52,14 @@ canvas{pointer-events:none;z-index:10}
 </div>
 
 <script type="module">
-/* ========== parameters ========== */
-const CARD_RATIO   = 1280/726;     // card’s width / height (≈1.76)
-const GUIDE_MARGIN = 0.08;         // 8 % padding inside the screen
-const BRIGHT_MIN   = 55;           // mean luminance threshold (0–255)
-const DEST_W       = 1280;         // cropped output width (keeps ratio)
+/* ---- tweakables ---- */
+const CARD_RATIO   = 1280/726;
+const GUIDE_MARGIN = 0.08;
+const BRIGHT_MIN   = 55;     // average luminance
+const EDGE_MIN     = 250;    // minimum edge pixels for “card present”
+const DEST_W       = 1280;
 
-/* ========== DOM refs ========== */
+/* ---- DOM ---- */
 const vid  = document.getElementById('video');
 const can  = document.getElementById('overlay');
 const ctx  = can.getContext('2d');
@@ -81,79 +70,63 @@ const snap = document.getElementById('snap');
 const shot = document.getElementById('shot');
 const dl   = document.getElementById('download');
 const rt   = document.getElementById('retake');
-const camStage = document.getElementById('cam');
-const prevStage= document.getElementById('preview');
+const camStage=document.getElementById('cam');
+const prevStage=document.getElementById('preview');
 
-/* ========== globals ========== */
+/* ---- globals ---- */
 let guide=null, ready=false;
 
-/* off-screen canvas for capture & sampling */
+/* off-screen canvas */
 const off = document.createElement('canvas');
 
-/* 1️⃣ wait for first user gesture (required by iOS autoplay rules) */
-const kick = () => { document.removeEventListener('touchstart',kick); document.removeEventListener('click',kick); initCamera(); };
+/* ---------- gesture to start camera ---------- */
+const kick=e=>{document.removeEventListener('touchstart',kick);document.removeEventListener('click',kick);initCam();};
 document.addEventListener('touchstart',kick,{once:true});
 document.addEventListener('click',kick,{once:true});
 
-/* 2️⃣ open the camera */
-async function initCamera(){
+async function initCam(){
   msg.textContent='Requesting camera…';
   try{
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video:{facingMode:{ideal:'environment'}}
-    });
-    vid.srcObject = stream;
-    await vid.play().catch(()=>{});
+    const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}}});
+    vid.srcObject=s;await vid.play().catch(()=>{});
   }catch(e){
-    fatalError(
-      e.name==='NotAllowedError'
-        ? 'Camera permission denied.<br>Safari → aA → “Website Settings” → Camera → Allow'
-        : `Could not access camera:<br>${e.message}`
-    );
-    return;
-  }
+    fatalError(e.name==='NotAllowedError'
+      ?'Camera permission denied.<br>Safari → aA → Website Settings → Camera → Allow'
+      :`Could not access camera:<br>${e.message}`);return;}
 
-  /* robust bootstrap: play / metadata / polling */
-  const boot = () => {
-    if (vid.videoWidth) {
-      can.width = off.width  = vid.videoWidth;
-      can.height= off.height = vid.videoHeight;
-      guide     = calcGuide(can.width,can.height);
-      msg.textContent='Align card inside brackets';
-      requestAnimationFrame(loop);
-      vid.removeEventListener('playing',boot);
-      vid.removeEventListener('loadedmetadata',boot);
-      clearInterval(poll);
-    }
+  const boot=()=>{
+    if(!vid.videoWidth)return;
+    can.width=off.width=vid.videoWidth;can.height=off.height=vid.videoHeight;
+    guide=calcGuide(can.width,can.height);
+    msg.textContent='Align card inside brackets';
+    requestAnimationFrame(loop);
+    vid.removeEventListener('playing',boot);
+    vid.removeEventListener('loadedmetadata',boot);
+    clearInterval(poll);
   };
   vid.addEventListener('playing',boot,{once:true});
   vid.addEventListener('loadedmetadata',boot,{once:true});
-  const poll = setInterval(boot,100);      // safety net
+  const poll=setInterval(boot,100);
 }
 
-/* 3️⃣ compute guide rectangle */
+/* guide rectangle */
 function calcGuide(W,H){
   const maxW=W*(1-GUIDE_MARGIN*2);
   let w=maxW,h=w/CARD_RATIO;
   if(h>H*(1-GUIDE_MARGIN*2)){h=H*(1-GUIDE_MARGIN*2);w=h*CARD_RATIO;}
-  const x=(W-w)/2,y=(H-h)/2;
-  return {x,y,w,h};
+  return{x:(W-w)/2,y:(H-h)/2,w,h};
 }
 
-/* 4️⃣ draw guide + thirds grid */
 function drawGuide(green){
-  const {x,y,w,h}=guide;
+  const{ x,y,w,h }=guide;
   ctx.clearRect(0,0,can.width,can.height);
-
-  ctx.lineWidth=6;ctx.strokeStyle=green?'#0f0':'#fff';
   const L=40;
+  ctx.lineWidth=6;ctx.strokeStyle=green?'#0f0':'#fff';
   ctx.beginPath();
   ctx.moveTo(x,y+L);ctx.lineTo(x,y);ctx.lineTo(x+L,y);
   ctx.moveTo(x+w-L,y);ctx.lineTo(x+w,y);ctx.lineTo(x+w,y+L);
   ctx.moveTo(x+w,y+h-L);ctx.lineTo(x+w,y+h);ctx.lineTo(x+w-L,y+h);
-  ctx.moveTo(x+L,y+h);ctx.lineTo(x,y+h);ctx.lineTo(x,y+h-L);
-  ctx.stroke();
-
+  ctx.moveTo(x+L,y+h);ctx.lineTo(x,y+h);ctx.lineTo(x,y+h-L);ctx.stroke();
   ctx.lineWidth=1;ctx.strokeStyle='rgba(255,255,255,.4)';
   for(let i=1;i<3;i++){
     ctx.beginPath();ctx.moveTo(x+w*i/3,y);ctx.lineTo(x+w*i/3,y+h);ctx.stroke();
@@ -162,52 +135,62 @@ function drawGuide(green){
   hint.style.top=`${y+h+20}px`;
 }
 
-/* 5️⃣ main animation loop */
+/* ---------- edge counter ---------- */
+function countEdges(imgData,w,h){
+  let edges=0;
+  const stride=w*4;
+  for(let y=0;y<h-1;y++){
+    for(let x=0;x<w-1;x++){
+      const i=(y*w+x)*4;
+      const lum   =(imgData[i]+imgData[i+1]+imgData[i+2])/3;
+      const lumR  =(imgData[i+4]+imgData[i+5]+imgData[i+6])/3;           // right px
+      const lumD  =(imgData[i+stride]+imgData[i+stride+1]+imgData[i+stride+2])/3; // down px
+      if(Math.abs(lum-lumR)>25||Math.abs(lum-lumD)>25) edges++;
+    }
+  }
+  return edges;
+}
+
+/* ---------- main loop ---------- */
 function loop(){
   if(vid.readyState<2){requestAnimationFrame(loop);return;}
+  off.getContext('2d').drawImage(vid,0,0);
 
-  off.getContext('2d').drawImage(vid,0,0);   // copy full frame
-
-  /* brightness sample at guide center */
   const {x,y,w,h}=guide;
-  const sampW=40, sampH=20;
-  const data = off.getContext('2d')
-                 .getImageData(x+w/2-sampW/2,y+h/2-sampH/2,sampW,sampH).data;
-  let lum=0; for(let i=0;i<data.length;i+=4) lum+=(data[i]+data[i+1]+data[i+2])/3;
-  ready = (lum/(data.length/4)) > BRIGHT_MIN;
+  const sample = off.getContext('2d').getImageData(x,y,w,h);
+  /* avg brightness */
+  let lumSum=0;for(let i=0;i<sample.data.length;i+=4)lumSum+=(sample.data[i]+sample.data[i+1]+sample.data[i+2])/3;
+  const brightOK=(lumSum/(sample.data.length/4))>BRIGHT_MIN;
+  /* edge density */
+  const edges=countEdges(sample.data,w,h);
+  const edgeOK=edges>=EDGE_MIN;
 
+  ready=brightOK&&edgeOK;
   drawGuide(ready);
-  hint.textContent = ready ? 'Hold steady and press shutter' : 'Add more light';
-  msg.textContent  = ready ? 'Ready – press shutter' : 'Align card inside brackets';
+  hint.textContent= ready ?'Hold steady and press shutter'
+        : (!brightOK?'Add more light':'Move card fully inside brackets');
+  msg.textContent= ready ?'Ready – press shutter':'Align card inside brackets';
   snap.classList.toggle('ready',ready);
-
   requestAnimationFrame(loop);
 }
 
-/* 6️⃣ capture inside guide rect */
-snap.onclick = () => {
-  if(!ready) return;
-
+/* ---------- shutter ---------- */
+snap.onclick=()=>{
+  if(!ready)return;
   const {x,y,w,h}=guide;
-  const fullCtx = off.getContext('2d');
-  fullCtx.drawImage(vid,0,0);                 // update latest frame
-  const crop = fullCtx.getImageData(x,y,w,h);
-
-  const out = document.createElement('canvas');
-  out.width = DEST_W;
-  out.height= Math.round(DEST_W/CARD_RATIO);
+  off.getContext('2d').drawImage(vid,0,0);
+  const crop=off.getContext('2d').getImageData(x,y,w,h);
+  const out=document.createElement('canvas');
+  out.width=DEST_W;out.height=Math.round(DEST_W/CARD_RATIO);
   out.getContext('2d').putImageData(crop,0,0);
-
   const url=out.toDataURL('image/jpeg',0.92);
-
-  camStage.style.display='none';
-  prevStage.style.display='flex';
+  camStage.style.display='none';prevStage.style.display='flex';
   shot.src=url;
   dl.onclick=()=>{const a=document.createElement('a');a.href=url;a.download='card.jpg';a.click();};
   rt.onclick=()=>{prevStage.style.display='none';camStage.style.display='block';};
 };
 
-/* 7️⃣ fatal helper */
+/* ---------- fatal overlay ---------- */
 function fatalError(html){
   fatal.innerHTML=html;
   fatal.style.display='flex';
