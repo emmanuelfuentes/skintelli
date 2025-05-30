@@ -1,168 +1,83 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Card Capture Guide</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Card Capture (simple)</title>
 <style>
-  html,body{margin:0;height:100%;overflow:hidden;background:#000;font-family:-apple-system,Roboto,Helvetica,Arial,sans-serif}
-  #cam,#preview{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
-  video,canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
-  canvas{pointer-events:none;z-index:10}
-  #msg{position:absolute;top:16px;left:50%;transform:translateX(-50%);padding:6px 12px;border-radius:8px;
-       background:rgba(0,0,0,.6);color:#fff;font-size:15px;z-index:20}
-  #capture,#download,#retake{padding:14px 36px;font-size:17px;border:none;border-radius:48px;background:#fff;color:#000;
-       position:absolute;bottom:60px;left:50%;transform:translateX(-50%);opacity:.35;pointer-events:none;transition:.2s}
-  #capture.enabled{opacity:1;pointer-events:auto}
-  #download,#retake{bottom:40px}
-  #download{left:34%;display:none}
-  #retake  {left:66%;display:none}
-  #preview img{max-width:96%;max-height:96%;border:4px solid #fff;border-radius:8px;box-shadow:0 0 8px rgba(0,0,0,.6)}
+ html,body{margin:0;height:100%;overflow:hidden;background:#000;font-family:-apple-system,Roboto,Helvetica,Arial,sans-serif}
+ #cam,#prev{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
+ video,canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+ canvas{pointer-events:none;z-index:10}
+ #msg{position:absolute;top:16px;left:50%;transform:translateX(-50%);padding:6px 12px;border-radius:8px;
+      background:rgba(0,0,0,.6);color:#fff;font-size:15px;z-index:20}
+ button{padding:14px 36px;font-size:17px;border:none;border-radius:48px;background:#fff;color:#000;transition:.2s}
+ #snap{position:absolute;bottom:60px;left:50%;transform:translateX(-50%);opacity:.35}
+ #snap.active{opacity:1}
+ #dl,#rt{display:none;margin:10px 20px}
+ #prev img{max-width:96%;max-height:96%;border:4px solid #fff;border-radius:8px}
 </style>
 </head>
 <body>
-<!-- ───────────────────────────────────────── camera stage ── -->
 <div id="cam">
-  <video id="video" autoplay playsinline></video>
-  <canvas id="overlay"></canvas>
-  <div  id="msg">Opening camera…</div>
-  <button id="capture">Capture</button>
+  <video id="v" autoplay playsinline></video>
+  <canvas id="c"></canvas>
+  <div id="msg">Opening camera…</div>
+  <button id="snap">Capture</button>
 </div>
 
-<!-- ───────────────────────────────────────── preview stage ── -->
-<div id="preview" style="display:none;flex-direction:column;gap:18px">
-  <img id="shot" alt="captured card">
-  <button id="download">Download</button>
-  <button id="retake">Retake</button>
+<div id="prev" style="display:none;flex-direction:column">
+  <img id="shot" alt="">
+  <div>
+    <button id="dl">Download</button>
+    <button id="rt">Retake</button>
+  </div>
 </div>
-
-<script async src="https://docs.opencv.org/4.x/opencv.js"
-        onload="window._cvReady = true"></script>
 
 <script type="module">
-/* ---- tweakables ---- */
-const CARD_RATIO   = 1280/726;   // ~1.76  (width / height)
-const RATIO_TOL    = 0.25;       // ±25 %
-const COVER_REQ    = 0.40;       // card must cover ≥40 % of the guide
-const BRIGHT_MIN   = 50;         // relax brightness
-const DEST_W       = 900;        // output width in px  (wide)
-const GUIDE_MARGIN = 0.10;       // 10 % margin
+const v=document.getElementById('v'), cv=document.getElementById('c'), ctx=cv.getContext('2d');
+const msg=document.getElementById('msg'), snap=document.getElementById('snap');
+const shot=document.getElementById('shot'), dl=document.getElementById('dl'), rt=document.getElementById('rt');
+const CARD_RATIO=1280/726,   // 1.76  (width / height)
+      MARGIN=.10, BRIGHT=50; // brightness threshold
 
-/* ---- DOM refs ---- */
-const video  = document.getElementById('video');
-const canvas = document.getElementById('overlay');
-const ctx    = canvas.getContext('2d');
-const msg    = document.getElementById('msg');
-const snap   = document.getElementById('capture');
-const shot   = document.getElementById('shot');
-const dlBtn  = document.getElementById('download');
-const rtBtn  = document.getElementById('retake');
-const stageCam = document.getElementById('cam');
-const stagePrev= document.getElementById('preview');
-
-/* ---- globals ---- */
-let ready = false, quad = null, _cvOK = false, off = document.createElement('canvas');
-
-/* ---- helpers ---- */
-const waitForCV = () => new Promise(r=>{
-  if(window._cvReady) return r();
-  const t = setInterval(()=>{ if(window._cvReady){clearInterval(t);r();}},30);
+navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}}}).then(s=>{
+  v.srcObject=s;
+  v.onloadedmetadata=()=>{cv.width=v.videoWidth;cv.height=v.videoHeight;loop();}
 });
 
-/* ---- camera boot ---- */
-(async()=>{
-  await waitForCV(); _cvOK=true;
-  const stream = await navigator.mediaDevices.getUserMedia({
-    video:{facingMode:{ideal:'environment'}}
-  });
-  video.srcObject = stream;
-
-  video.onloadedmetadata = ()=>{
-    canvas.width  = video.videoWidth;
-    canvas.height = video.videoHeight;
-    off.width = video.videoWidth; off.height = video.videoHeight;
-    msg.textContent = 'Align card to guide';
-    requestAnimationFrame(loop);
-  };
-})();
-
-/* ---- main loop ---- */
 function loop(){
-  if(!_cvOK) return requestAnimationFrame(loop);
+  if(v.readyState<2) return requestAnimationFrame(loop);
 
-  /* 1️⃣  cheap brightness check */
-  const octx = off.getContext('2d');
-  octx.drawImage(video,0,0);
-  const tiny = octx.getImageData(0,0,8,8).data;
-  let lum=0; for(let i=0;i<tiny.length;i+=4) lum+=(tiny[i]+tiny[i+1]+tiny[i+2])/3;
-  const bright = (lum/16) > BRIGHT_MIN;
+  /* 1) quick brightness check – sample 32 px */
+  const tmp=document.createElement('canvas'); tmp.width=8; tmp.height=4;
+  const tctx=tmp.getContext('2d'); tctx.drawImage(v,0,0,8,4);
+  const d=tctx.getImageData(0,0,8,4).data; let lum=0;
+  for(let i=0;i<d.length;i+=4) lum+=(d[i]+d[i+1]+d[i+2])/3;
+  const brightOK=(lum/(d.length/4))>BRIGHT;
 
-  /* 2️⃣  contour detect */
-  let aligned=false; quad=null;
-  try{
-    const src = cv.imread(off);
-    cv.cvtColor(src, src, cv.COLOR_RGBA2GRAY);
-    cv.GaussianBlur(src, src, new cv.Size(3,3),0);
-    cv.Canny(src, src, 60, 120);
+  /* 2) landscape check */
+  const landOK = v.videoWidth>v.videoHeight;
 
-    const vec=new cv.MatVector(), hier=new cv.Mat();
-    cv.findContours(src, vec, hier, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+  const good = brightOK && landOK;
+  drawGuide(good);
 
-    let bestArea=0, best=null;
-    for(let i=0;i<vec.size();i++){
-      const c=vec.get(i), area=cv.contourArea(c);
-      if(area>bestArea){bestArea=area;best=c;}
-    }
-    if(best){
-      const peri=cv.arcLength(best,true), approx=new cv.Mat();
-      cv.approxPolyDP(best, approx, 0.02*peri, true);
-      if(approx.rows===4){
-        const pts=[]; for(let i=0;i<4;i++) pts.push({x:approx.intAt(i,0),y:approx.intAt(i,1)});
-        // sort roughly tl, tr, br, bl
-        pts.sort((a,b)=>a.x+a.y - (b.x+b.y));
-        const [tl,br]=[pts[0],pts[3]];
-        const rest=[pts[1],pts[2]].sort((a,b)=>a.x-b.x);
-        const [tr,bl]=rest;
-        quad=[tl,tr,br,bl];
+  msg.textContent = brightOK ? (good?'Ready – tap Capture':'Align card to guide')
+                             : 'Too dark – add light';
+  snap.classList.toggle('active',good);
 
-        // ratio test
-        const w=Math.hypot(tr.x-tl.x,tr.y-tl.y), h=Math.hypot(bl.x-tl.x,bl.y-tl.y);
-        const ratioOK=Math.abs(w/h - CARD_RATIO)/CARD_RATIO < RATIO_TOL;
-
-        // coverage test
-        const screen=canvas.width*canvas.height;
-        const coverOK=(bestArea/screen) > COVER_REQ;
-
-        aligned=ratioOK&&coverOK;
-      }
-      approx.delete();
-    }
-    src.delete(); vec.delete(); hier.delete();
-  }catch(e){console.error(e);}
-
-  ready = bright && aligned;
-  drawGuide(ready);
-
-  msg.textContent = bright ? (ready?'Perfect – tap Capture':'Align card to guide')
-                           : 'Too dark – add light';
-  snap.classList.toggle('enabled', ready);
   requestAnimationFrame(loop);
 }
 
-/* ---- draw guide ---- */
 function drawGuide(good){
-  const W=canvas.width, H=canvas.height;
+  const W=cv.width,H=cv.height;
   ctx.clearRect(0,0,W,H);
-
-  // compute horizontal guide first
-  const maxW=W*(1-GUIDE_MARGIN*2);
-  let gw=maxW, gh=gw/CARD_RATIO;
-  if(gh>H*(1-GUIDE_MARGIN*2)){gh=H*(1-GUIDE_MARGIN*2);gw=gh*CARD_RATIO;}
-  const x=(W-gw)/2, y=(H-gh)/2;
+  const maxW=W*(1-MARGIN*2); let gw=maxW,gh=gw/CARD_RATIO;
+  if(gh>H*(1-MARGIN*2)){gh=H*(1-MARGIN*2);gw=gh*CARD_RATIO;}
+  const x=(W-gw)/2,y=(H-gh)/2;
 
   ctx.lineWidth=4; ctx.strokeStyle=good?'#0f0':'#f00';
   ctx.strokeRect(x,y,gw,gh);
-
   ctx.strokeStyle='rgba(255,255,255,.5)'; ctx.lineWidth=1;
   for(let i=1;i<3;i++){
     ctx.beginPath();ctx.moveTo(x+gw*i/3,y);ctx.lineTo(x+gw*i/3,y+gh);ctx.stroke();
@@ -170,30 +85,20 @@ function drawGuide(good){
   }
 }
 
-/* ---- capture ---- */
 snap.onclick=()=>{
-  if(!ready||!quad) return;
-  const src=cv.imread(off), dsize=new cv.Size(DEST_W,Math.round(DEST_W/CARD_RATIO));
-  const srcTri=cv.matFromArray(4,1,cv.CV_32FC2,quad.flatMap(p=>[p.x,p.y]));
-  const dstTri=cv.matFromArray(4,1,cv.CV_32FC2,[0,0,dsize.width,0,dsize.width,dsize.height,0,dsize.height]);
-  const M=cv.getPerspectiveTransform(srcTri,dstTri), dst=new cv.Mat();
-  cv.warpPerspective(src,dst,M,dsize,cv.INTER_LINEAR,cv.BORDER_CONSTANT);
+  if(!snap.classList.contains('active'))return;
+  const shotCanvas=document.createElement('canvas');
+  shotCanvas.width=v.videoWidth;shotCanvas.height=v.videoHeight;
+  shotCanvas.getContext('2d').drawImage(v,0,0);
+  const url=shotCanvas.toDataURL('image/jpeg',0.9);
 
-  const c=document.createElement('canvas'); c.width=dsize.width; c.height=dsize.height;
-  cv.imshow(c,dst);
-  const dataURL=c.toDataURL('image/jpeg',0.9);
+  document.getElementById('cam').style.display='none';
+  document.getElementById('prev').style.display='flex';
+  shot.src=url; dl.style.display=rt.style.display='inline-block';
 
-  // show preview
-  stageCam.style.display='none'; stagePrev.style.display='flex';
-  shot.src=dataURL; dlBtn.style.display=rtBtn.style.display='block';
-
-  // prep download link
-  dlBtn.onclick=()=>{const a=document.createElement('a');a.href=dataURL;a.download='card.jpg';a.click();};
-
-  // retake
-  rtBtn.onclick=()=>{stagePrev.style.display='none';stageCam.style.display='block';};
-
-  src.delete();dst.delete();M.delete();srcTri.delete();dstTri.delete();
+  dl.onclick=()=>{const a=document.createElement('a');a.href=url;a.download='card.jpg';a.click();};
+  rt.onclick=()=>{document.getElementById('prev').style.display='none';
+                  document.getElementById('cam').style.display='block';};
 };
 </script>
 </body>
