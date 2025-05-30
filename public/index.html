@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <title>Card Scanner</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-/* ---------- layout ---------- */
-html,body{margin:0;height:100%;overflow:hidden;background:#000;font-family:-apple-system,Roboto,Helvetica,Arial,sans-serif}
 
+<style>
+/* ----- layout ----- */
+html,body{margin:0;height:100%;overflow:hidden;background:#000;font-family:-apple-system,Roboto,Helvetica,Arial,sans-serif}
 #cam,#preview{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
 video,canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
 canvas{pointer-events:none;z-index:10}
@@ -42,19 +42,19 @@ canvas{pointer-events:none;z-index:10}
 </head>
 <body>
 
-<!-- live camera -->
+<!-- ─── live camera stage ─── -->
 <div id="cam">
   <video id="video" autoplay playsinline muted></video>
   <canvas id="overlay"></canvas>
 
-  <div id="msg">Tap anywhere to enable camera</div>
+  <div id="msg">Loading OpenCV…</div>
   <div id="hint"></div>
   <button id="snap" aria-label="Shutter"></button>
 
   <div id="fatal"></div>
 </div>
 
-<!-- preview stage -->
+<!-- ─── preview stage ─── -->
 <div id="preview">
   <img id="shot" alt="">
   <div class="ctrls">
@@ -63,11 +63,11 @@ canvas{pointer-events:none;z-index:10}
   </div>
 </div>
 
-<!-- OpenCV -->
+<!-- OpenCV.js -->
 <script src="https://docs.opencv.org/4.x/opencv.js"></script>
 
 <script type="module">
-/* ---------- tweakables ---------- */
+/* === tweakables === */
 const CARD_RATIO   = 1280/726;
 const RATIO_TOL    = 0.35;
 const COVER_REQ    = 0.35;
@@ -75,7 +75,7 @@ const BRIGHT_MIN   = 45;
 const GUIDE_MARGIN = 0.08;
 const DEST_W       = 1280;
 
-/* ---------- DOM refs ---------- */
+/* === DOM refs === */
 const vid  = document.getElementById('video');
 const can  = document.getElementById('overlay');
 const ctx  = can.getContext('2d');
@@ -89,43 +89,45 @@ const ret  = document.getElementById('retake');
 const camStage = document.getElementById('cam');
 const prevStage= document.getElementById('preview');
 
-/* ---------- globals ---------- */
+/* === globals === */
 let ready=false, quad=null, brightOK=false, ratioOK=false, coverOK=false;
 
-/* off-screen canvas (always read OpenCV frames from here) */
+/* off-screen canvas */
 const off = document.createElement('canvas');
 
-/* gate until OpenCV fully ready */
+/* wait for OpenCV */
 cv.onRuntimeInitialized = () => {
-  document.body.addEventListener('click', initCamera, { once:true });
+  msg.textContent = 'Tap to enable camera';
+  const kick = ()=>{ document.removeEventListener('touchstart',kick); document.removeEventListener('click',kick); initCamera(); };
+  document.addEventListener('touchstart',kick,{once:true});
+  document.addEventListener('click',kick,{once:true});
 };
 
-/* ---------- init camera after first tap ---------- */
+/* ---------- camera init ---------- */
 async function initCamera(){
-  msg.textContent = 'Requesting camera permission…';
   try{
+    msg.textContent='Requesting camera…';
     const stream = await navigator.mediaDevices.getUserMedia({
-      video:{ facingMode:{ ideal:'environment' } }
+      video:{facingMode:{ideal:'environment'}}
     });
     vid.srcObject = stream;
     await vid.play().catch(()=>{});
 
-    /* watchdog: if metadata never comes, show error */
-    const watchdog = setTimeout(()=>fatalError('Camera stream timeout.<br>Close other apps using the camera.'),4000);
+    const watchdog=setTimeout(()=>fatalError('Camera timed out.<br>Close other apps using the lens.'),4000);
 
-    vid.onloadedmetadata = () => {
+    vid.onloadedmetadata = ()=>{
       clearTimeout(watchdog);
       can.width = off.width  = vid.videoWidth;
       can.height= off.height = vid.videoHeight;
-      msg.textContent = 'Align card inside brackets';
+      msg.textContent='Align card inside brackets';
       requestAnimationFrame(loop);
     };
 
-  }catch(err){
+  }catch(e){
     fatalError(
-      err.name==='NotAllowedError'
+      e.name==='NotAllowedError'
         ? 'Camera permission denied.<br>Safari → aA → “Website Settings” → Camera → Allow'
-        : `Could not access camera.<br>${err.message}`
+        : `Could not access camera:<br>${e.message}`
     );
   }
 }
@@ -134,16 +136,15 @@ async function initCamera(){
 function loop(){
   if(vid.readyState<2){requestAnimationFrame(loop);return;}
 
-  /* copy frame to off-screen canvas */
   off.getContext('2d').drawImage(vid,0,0);
 
   /* brightness */
-  const tiny=off.getContext('2d').getImageData(0,0,8,8).data;
-  let lum=0;for(let i=0;i<tiny.length;i+=4)lum+=(tiny[i]+tiny[i+1]+tiny[i+2])/3;
-  brightOK=(lum/16)>BRIGHT_MIN;
+  const tiny = off.getContext('2d').getImageData(0,0,8,8).data;
+  let lum=0; for(let i=0;i<tiny.length;i+=4) lum+=(tiny[i]+tiny[i+1]+tiny[i+2])/3;
+  brightOK = (lum/16) > BRIGHT_MIN;
 
-  /* edge + quad detection */
-  ready=false;quad=null;ratioOK=coverOK=false;
+  /* contour detection */
+  ready=false; quad=null; ratioOK=coverOK=false;
   try{
     const src=cv.imread(off);
     cv.cvtColor(src,src,cv.COLOR_RGBA2GRAY);
@@ -152,16 +153,16 @@ function loop(){
     const cnts=new cv.MatVector(), hier=new cv.Mat();
     cv.findContours(src,cnts,hier,cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE);
 
-    let best=null,area=0;
+    let best=null, area=0;
     for(let i=0;i<cnts.size();i++){
-      const c=cnts.get(i),a=cv.contourArea(c);
+      const c=cnts.get(i), a=cv.contourArea(c);
       if(a>area){area=a;best=c;}
     }
     if(best){
-      const peri=cv.arcLength(best,true),approx=new cv.Mat();
+      const peri=cv.arcLength(best,true), approx=new cv.Mat();
       cv.approxPolyDP(best,approx,0.02*peri,true);
       if(approx.rows===4){
-        const pts=[];for(let i=0;i<4;i++)pts.push({x:approx.intAt(i,0),y:approx.intAt(i,1)});
+        const pts=[]; for(let i=0;i<4;i++) pts.push({x:approx.intAt(i,0),y:approx.intAt(i,1)});
         pts.sort((a,b)=>a.x+a.y-(b.x+b.y));
         const [tl,br]=[pts[0],pts[3]];
         const rest=[pts[1],pts[2]].sort((a,b)=>a.x-b.x);
@@ -172,11 +173,11 @@ function loop(){
               h=Math.hypot(bl.x-tl.x,bl.y-tl.y);
         ratioOK=Math.abs(w/h-CARD_RATIO)/CARD_RATIO<RATIO_TOL;
         coverOK=(area/(can.width*can.height))>COVER_REQ;
-        ready=brightOK&&ratioOK&&coverOK;
+        ready = brightOK && ratioOK && coverOK;
       }
       approx.delete();
     }
-    src.delete();cnts.delete();hier.delete();
+    src.delete(); cnts.delete(); hier.delete();
   }catch(e){console.error(e);}
 
   drawGuide(ready);
@@ -184,24 +185,24 @@ function loop(){
   msg.textContent = brightOK
       ? (ready?'Ready – press shutter':'Align card inside brackets')
       : 'Add more light';
-
   snap.classList.toggle('ready',ready);
+
   requestAnimationFrame(loop);
 }
 
-/* ---------- draw L brackets & position hint ---------- */
+/* ---------- brackets & hint pos ---------- */
 function drawGuide(green){
   const W=can.width,H=can.height;
   ctx.clearRect(0,0,W,H);
 
   const maxW=W*(1-GUIDE_MARGIN*2);
-  let gw=maxW,gh=gw/CARD_RATIO;
+  let gw=maxW, gh=gw/CARD_RATIO;
   if(gh>H*(1-GUIDE_MARGIN*2)){gh=H*(1-GUIDE_MARGIN*2);gw=gh*CARD_RATIO;}
-  const x=(W-gw)/2,y=(H-gh)/2;
+  const x=(W-gw)/2, y=(H-gh)/2;
 
   hint.style.top=`${y+gh+20}px`;
 
-  ctx.lineWidth=6;ctx.strokeStyle=green?'#0f0':'#fff';
+  ctx.lineWidth=6; ctx.strokeStyle=green?'#0f0':'#fff';
   const L=40;
   ctx.beginPath();
   ctx.moveTo(x,y+L);ctx.lineTo(x,y);ctx.lineTo(x+L,y);
@@ -211,12 +212,12 @@ function drawGuide(green){
   ctx.stroke();
 }
 
-/* ---------- hint text ---------- */
+/* ---------- dynamic hint ---------- */
 function updateHint(){
   if(ready){hint.textContent='Hold steady and press shutter';return;}
   if(!brightOK){hint.textContent='Add more light';return;}
   if(!coverOK){hint.textContent='Move card fully inside brackets';return;}
-  if(!ratioOK){hint.textContent='Keep card level / not tilted';return;}
+  if(!ratioOK){hint.textContent='Keep card level (not tilted)';return;}
   hint.textContent='';
 }
 
@@ -233,16 +234,16 @@ snap.onclick=()=>{
   cv.warpPerspective(src,dst,M,dstSz,cv.INTER_LINEAR,cv.BORDER_CONSTANT);
 
   const out=document.createElement('canvas');
-  out.width=dstSz.width;out.height=dstSz.height;
+  out.width=dstSz.width; out.height=dstSz.height;
   cv.imshow(out,dst);
   const url=out.toDataURL('image/jpeg',0.92);
 
-  camStage.style.display='none';prevStage.style.display='flex';
+  camStage.style.display='none'; prevStage.style.display='flex';
   shot.src=url;
   save.onclick=()=>{const a=document.createElement('a');a.href=url;a.download='card.jpg';a.click();};
   ret.onclick =()=>{prevStage.style.display='none';camStage.style.display='block';};
 
-  src.delete();dst.delete();M.delete();srcTri.delete();dstTri.delete();
+  src.delete(); dst.delete(); M.delete(); srcTri.delete(); dstTri.delete();
 };
 
 /* ---------- fatal overlay ---------- */
