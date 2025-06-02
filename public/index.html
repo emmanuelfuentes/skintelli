@@ -1,27 +1,40 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Card Capture • simple</title>
+<title>Skintelli Card Capture</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<!-- rectangle detector -->
+<script src="https://cdn.jsdelivr.net/npm/jscanify@1.0.4/dist/jscanify.min.js"></script>
+
 <style>
+/* ---- layout ---- */
 html,body{margin:0;height:100%;overflow:hidden;background:#000;font-family:-apple-system,Roboto,Helvetica,Arial}
 #live,#preview{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
 video,canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
 canvas{pointer-events:none;z-index:10}
-/* hide any native overlay */
+/* hide iOS play/pause overlay */
 video::-webkit-media-controls-start-playback-button{display:none!important;-webkit-appearance:none}
+
+/* banners */
 #msg{position:absolute;top:14px;left:50%;transform:translateX(-50%);
      padding:6px 14px;border-radius:8px;background:rgba(0,0,0,.65);color:#fff;font-size:15px;z-index:20}
 #hint{position:absolute;left:50%;transform:translateX(-50%);color:#fff;font-size:15px;text-align:center;z-index:20}
-#snap{position:absolute;bottom:42px;left:50%;transform:translateX(-50%);width:80px;height:80px;border-radius:50%;
-      border:4px solid #fff;background:rgba(255,255,255,.15);display:flex;align-items:center;justify-content:center;
-      opacity:.35;pointer-events:none;transition:.2s}
+
+/* shutter */
+#snap{position:absolute;bottom:42px;left:50%;transform:translateX(-50%);
+      width:80px;height:80px;border-radius:50%;border:4px solid #fff;
+      background:rgba(255,255,255,.15);display:flex;align-items:center;justify-content:center;
+      opacity:.35;pointer-events:none;transition:.2s ease;z-index:20}
+#snap::after{content:'';width:54px;height:54px;border-radius:50%;background:#fff}
 #snap.ready{opacity:1;pointer-events:auto}
-#snap::after{content:'';width:54px;height:54px;border-radius:50%;background:#00ff00}
+#snap.ready::after{background:#0f0}
+
+/* preview */
 #preview{flex-direction:column;gap:18px;background:#000;display:none}
 #shot{max-width:96%;max-height:96%;border:4px solid #fff;border-radius:10px}
-.ctrls button{padding:12px 26px;border:none;border-radius:40px;background:#fff;margin:0 10px;font-size:16px}
+.ctrls button{padding:12px 26px;font-size:16px;border:none;border-radius:40px;background:#fff;margin:0 10px}
+
 </style>
 </head>
 <body>
@@ -30,8 +43,8 @@ video::-webkit-media-controls-start-playback-button{display:none!important;-webk
 <div id="live">
   <video id="vid" playsinline muted disablepictureinpicture></video>
   <canvas id="ov"></canvas>
-  <div id="msg">Tap to enable camera</div><div id="hint"></div>
-  <button id="snap"></button>
+  <div id="msg">Tap anywhere to enable camera</div><div id="hint"></div>
+  <button id="snap" aria-label="Shutter"></button>
 </div>
 
 <!-- preview -->
@@ -41,63 +54,91 @@ video::-webkit-media-controls-start-playback-button{display:none!important;-webk
 </div>
 
 <script>
-/* ---- constants ---- */
-const AR=1280/726, PAD=.08, OUT_W=1280;
+/* ── constants ── */
+const CARD_AR = 1280/726, PAD=.08;          // horizontal card
+const READY_COV = .9;                       // rectangle must fill ≥90 % of guide
+const DEST_W = 1280;
 
-/* ---- DOM ---- */
-const v=document.getElementById('vid'), ov=document.getElementById('ov'), ctx=ov.getContext('2d'),
-      msg=document.getElementById('msg'), hint=document.getElementById('hint'),
-      snap=document.getElementById('snap'), shot=document.getElementById('shot'),
-      dl=document.getElementById('dl'), rt=document.getElementById('rt'),
+/* ── DOM refs ── */
+const v=document.getElementById('vid'), ov=document.getElementById('ov'), ctx=ov.getContext('2d');
+const msg=document.getElementById('msg'), hint=document.getElementById('hint'),
+      snap=document.getElementById('snap'),
+      shot=document.getElementById('shot'), dl=document.getElementById('dl'), rt=document.getElementById('rt'),
       live=document.getElementById('live'), prev=document.getElementById('preview');
 
-/* ---- globals ---- */
-let guide={}, ready=true;      /* always let shutter fire for now */
+/* ── globals ── */
+let guide={x:0,y:0,w:0,h:0}, ready=false;
 const off=document.createElement('canvas');
 
-/* ---- build horizontal guide once video known ---- */
+/* build guide once video dims are known */
 function setGuide(w,h){
-  const maxW=w*(1-PAD*2); let gw=maxW, gh=gw/AR;
-  if(gh>h*(1-PAD*2)){ gh=h*(1-PAD*2); gw=gh*AR; }
-  guide={x:(w-gw)/2,y:(h-gh)/2,w:gw,h:gh};
+  const maxW=w*(1-PAD*2); let gw=maxW, gh=gw/CARD_AR;
+  if(gh>h*(1-PAD*2)){ gh=h*(1-PAD*2); gw=gh*CARD_AR; }
+  guide={x:(w-gw)/2, y:(h-gh)/2, w:gw, h:gh};
 }
 
-/* ---- draw brackets every frame ---- */
-function draw(){
+/* draw brackets every frame */
+function drawBrackets(isReady){
   const {x,y,w,h}=guide,L=40;
   ctx.clearRect(0,0,ov.width,ov.height);
-  ctx.lineWidth=6; ctx.strokeStyle='#fff';
+  ctx.lineWidth=6; ctx.strokeStyle=isReady?'#0f0':'#fff';
   ctx.beginPath();
   ctx.moveTo(x,y+L);ctx.lineTo(x,y);ctx.lineTo(x+L,y);
   ctx.moveTo(x+w-L,y);ctx.lineTo(x+w,y);ctx.lineTo(x+w,y+L);
   ctx.moveTo(x+w,y+h-L);ctx.lineTo(x+w,y+h);ctx.lineTo(x+w-L,y+h);
   ctx.moveTo(x+L,y+h);ctx.lineTo(x,y+h);ctx.lineTo(x,y+h-L); ctx.stroke();
+  /* thirds grid */
+  ctx.lineWidth=1; ctx.strokeStyle='rgba(255,255,255,.35)';
+  for(let i=1;i<3;i++){
+    ctx.beginPath();ctx.moveTo(x+w*i/3,y);ctx.lineTo(x+w*i/3,y+h);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(x,y+h*i/3);ctx.lineTo(x+w,y+h*i/3);ctx.stroke();}
   hint.style.top=`${y+h+20}px`;
-  requestAnimationFrame(draw);
 }
 
-/* ---- boot camera on first tap ---- */
+/* main loop – only rectangle detection */
+function loop(){
+  off.getContext('2d').drawImage(v,0,0);
+  const {x,y,w,h}=guide;
+  const roi=off.getContext('2d').getImageData(x,y,w,h);
+  const quads = window.jscanify.detect(roi);
+  let rectOK=false;
+  if(quads.length){
+    const q=quads[0];
+    const bw=q[1].x-q[0].x, bh=q[3].y-q[0].y;
+    rectOK = Math.abs(bw/w-1)<(1-READY_COV) && Math.abs(bh/h-1)<(1-READY_COV);
+  }
+  ready=rectOK;
+  drawBrackets(ready);
+  hint.textContent = ready ? 'Hold steady and press shutter' : 'Move card fully inside brackets';
+  snap.classList.toggle('ready',ready);
+  requestAnimationFrame(loop);
+}
+
+/* boot on tap */
 async function enable(){
+  document.removeEventListener('touchstart',enable);
   document.removeEventListener('click',enable);
   try{
     const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}}});
-    v.srcObject=s; await v.play();                                   // inside same event stack → no ▶︎
+    v.srcObject=s; await v.play();                               // user gesture → no ▶︎ overlay
   }catch(e){msg.textContent=e.message;return;}
-  await new Promise(r=>v.onloadedmetadata=r);
 
+  await new Promise(r=>v.onloadedmetadata=r);
   ov.width=off.width=v.videoWidth; ov.height=off.height=v.videoHeight;
-  setGuide(ov.width,ov.height); msg.textContent='Frame card horizontally';
-  snap.classList.add('ready');                                        // always active
-  draw();
+  setGuide(ov.width,ov.height);
+  msg.textContent='Align card horizontally';                     // brackets visible immediately
+  drawBrackets(false);                                           // initial draw
+  requestAnimationFrame(loop);
 }
+document.addEventListener('touchstart',enable,{once:true});
 document.addEventListener('click',enable,{once:true});
 
-/* ---- shutter ---- */
+/* shutter capture */
 snap.onclick=()=>{
-  if(!snap.classList.contains('ready'))return;
+  if(!ready)return;
   const {x,y,w,h}=guide;
   off.getContext('2d').drawImage(v,0,0);
-  const out=document.createElement('canvas'); out.width=OUT_W; out.height=Math.round(OUT_W/AR);
+  const out=document.createElement('canvas'); out.width=DEST_W; out.height=Math.round(DEST_W/CARD_AR);
   out.getContext('2d').drawImage(off,x,y,w,h,0,0,out.width,out.height);
   const url=out.toDataURL('image/jpeg',0.92);
   live.style.display='none'; prev.style.display='flex'; shot.src=url;
