@@ -2,17 +2,17 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Skintelli Card Capture (CDN Only)</title>
+  <title>Skintelli Card Capture (CDN-Only)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
 
   <!-- ─── CDN LIBRARIES ─── -->
-  <!-- jScanify: small rectangle detector (~120 KB gz) -->
+  <!-- jScanify: tiny WASM→JS rectangle detector (~120 KB gz) -->
   <script src="https://cdn.jsdelivr.net/npm/jscanify@1.0.4/dist/jscanify.min.js"></script>
   <!-- Tesseract.js: fallback OCR (~180 KB gz) -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 
   <style>
-    /* ─── Layout & Styling ─── */
+    /* ─── Base Layout ─── */
     html, body {
       margin: 0;
       padding: 0;
@@ -28,26 +28,23 @@
       height: 100%;
       background: #000;
     }
-    #video, #overlay {
+    #video {
       position: absolute;
       top: 0; left: 0;
       width: 100%;
       height: 100%;
       object-fit: cover;
     }
-    /* Canvas on top of video */
-    #overlay {
-      pointer-events: none;
-      z-index: 10;
-    }
+    /* We’ll place our corner-divs on top, so no need for a full-canvas draw. */
+    /* However, we keep a 1×1 offscreen canvas just for detection. */
 
-    /* Hide iOS white play button */
+    /* Hide the iOS white ▶︎ icon */
     video::-webkit-media-controls-start-playback-button {
       display: none !important;
       -webkit-appearance: none;
     }
 
-    /* “Tap anywhere…” banner */
+    /* ─── “Tap anywhere…” Banner ─── */
     #msg {
       position: absolute;
       top: 20px;
@@ -61,7 +58,8 @@
       z-index: 20;
       text-align: center;
     }
-    /* Hint text under guides */
+
+    /* ─── Hint Text (below guides) ─── */
     #hint {
       position: absolute;
       left: 50%;
@@ -72,7 +70,7 @@
       z-index: 20;
     }
 
-    /* Shutter button in bottom center */
+    /* ─── Shutter Circle ─── */
     #shutter {
       position: absolute;
       bottom: 40px;
@@ -86,7 +84,7 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      opacity: 1;               /* always clickable */
+      opacity: 1;            /* always clickable */
       z-index: 20;
     }
     #shutter::after {
@@ -94,13 +92,48 @@
       width: 54px;
       height: 54px;
       border-radius: 50%;
-      background: #fff;        /* white circle by default */
+      background: #fff;      /* white circle by default */
     }
     #shutter.ready::after {
-      background: #0f0;        /* green when card detected */
+      background: #0f0;      /* green when card detected */
     }
 
-    /* Full-screen fatal overlay */
+    /* ─── Four Corner Guides ───
+       We’ll position these DIVs absolutely over the video.
+    */
+    .corner {
+      position: absolute;
+      width: 40px;
+      height: 40px;
+      z-index: 20;
+    }
+    .corner .inner {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+    }
+    .corner.tl .inner {
+      border-left: 6px solid #fff;
+      border-top: 6px solid #fff;
+    }
+    .corner.tr .inner {
+      border-right: 6px solid #fff;
+      border-top: 6px solid #fff;
+    }
+    .corner.bl .inner {
+      border-left: 6px solid #fff;
+      border-bottom: 6px solid #fff;
+    }
+    .corner.br .inner {
+      border-right: 6px solid #fff;
+      border-bottom: 6px solid #fff;
+    }
+    /* When “ready,” switch to green corners */
+    .corner.ready .inner {
+      border-color: #0f0 !important;
+    }
+
+    /* ─── Fatal Error Overlay ─── */
     #fatal {
       position: absolute;
       inset: 0;
@@ -115,7 +148,7 @@
       z-index: 30;
     }
 
-    /* Preview stage (hidden until shutter) */
+    /* ─── Preview Stage ─── */
     #preview {
       position: absolute;
       inset: 0;
@@ -147,17 +180,23 @@
   </style>
 </head>
 <body>
-  <!-- ─── LIVE CAMERA + OVERLAY ─── -->
+  <!-- ─── Live Camera + Overlays ─── -->
   <div id="wrapper">
     <video id="video" playsinline muted></video>
-    <canvas id="overlay"></canvas>
+
+    <!-- Four corner DIVs (each contains a 40×40 inner div for the “L” borders) -->
+    <div id="corner_tl" class="corner tl"><div class="inner"></div></div>
+    <div id="corner_tr" class="corner tr"><div class="inner"></div></div>
+    <div id="corner_bl" class="corner bl"><div class="inner"></div></div>
+    <div id="corner_br" class="corner br"><div class="inner"></div></div>
+
     <div id="msg">Tap anywhere to enable camera</div>
     <div id="hint"></div>
     <button id="shutter" aria-label="Shutter"></button>
     <div id="fatal"></div>
   </div>
 
-  <!-- ─── CAPTURE PREVIEW ─── -->
+  <!-- ─── Capture Preview ─── -->
   <div id="preview">
     <img id="captured" alt="Captured image">
     <div class="ctrls">
@@ -168,111 +207,84 @@
 
   <script>
     // ─── Configuration ───
-    const CARD_RATIO   = 1280 / 726;   // Landscape card
-    const PADDING      = 0.08;         // 8% margin
-    const MIN_COVER    = 0.90;         // 90% coverage before OCR
-    const OCR_PATTERN  = /SKINTELLI/i; // Look for “SKINTELLI”
-    const OCR_DEBOUNCE = 800;          // ms between OCR checks
-    const OUTPUT_W     = 1280;         // JPEG width
+    const CARD_RATIO   = 1280/726;    // horizontal card aspect ratio
+    const PADDING      = 0.08;        // 8% margin all around
+    const MIN_COVER    = 0.90;        // rectangle must cover ≥90% of guide
+    const OCR_PATTERN  = /SKINTELLI/i;
+    const OCR_DEBOUNCE = 800;         // ms between OCR attempts
+    const OUTPUT_W     = 1280;        // JPEG width for final crop
 
-    // ─── DOM Elements ───
-    const wrapper  = document.getElementById('wrapper');
-    const videoEl  = document.getElementById('video');
-    const canvas   = document.getElementById('overlay');
-    const ctx      = canvas.getContext('2d');
-    const msg      = document.getElementById('msg');
-    const hint     = document.getElementById('hint');
-    const shutter  = document.getElementById('shutter');
-    const fatal    = document.getElementById('fatal');
-    const preview  = document.getElementById('preview');
-    const captured = document.getElementById('captured');
-    const download = document.getElementById('download');
-    const retake   = document.getElementById('retake');
+    // ─── DOM References ───
+    const wrapper   = document.getElementById('wrapper');
+    const videoEl   = document.getElementById('video');
+    const msg       = document.getElementById('msg');
+    const hint      = document.getElementById('hint');
+    const shutter   = document.getElementById('shutter');
+    const fatal     = document.getElementById('fatal');
+    const preview   = document.getElementById('preview');
+    const captured  = document.getElementById('captured');
+    const download  = document.getElementById('download');
+    const retake    = document.getElementById('retake');
+    // corners:
+    const cornerTL  = document.getElementById('corner_tl');
+    const cornerTR  = document.getElementById('corner_tr');
+    const cornerBL  = document.getElementById('corner_bl');
+    const cornerBR  = document.getElementById('corner_br');
 
     // ─── State ───
     let guideRect       = { x:0, y:0, w:0, h:0 };
     let cardDetected    = false;
     let lastOCRTime     = 0;
     let tesseractWorker = null;
-    const offscreen     = document.createElement('canvas');
+    // offscreen canvas (1:1 mapped to video’s native resolution)
+    const offscreen = document.createElement('canvas');
 
-    // ─── Build and draw the white corner guides once metadata is ready ───
-    function buildGuide(videoW, videoH) {
-      const maxW = videoW * (1 - PADDING * 2);
+    // ─── Build the horizontal guide (in displayed pixels) once <video> metadata is ready ───
+    function buildGuide() {
+      // get displayed size & position of the <video> element
+      const rect = videoEl.getBoundingClientRect();
+      const dispW = rect.width, dispH = rect.height;
+      const offsetX = rect.left, offsetY = rect.top;
+
+      // compute guide dimensions in display pixels
+      const maxW = dispW * (1 - PADDING*2);
       let gw = maxW, gh = gw / CARD_RATIO;
-      if (gh > videoH * (1 - PADDING * 2)) {
-        gh = videoH * (1 - PADDING * 2);
+      if (gh > dispH * (1 - PADDING*2)) {
+        gh = dispH * (1 - PADDING*2);
         gw = gh * CARD_RATIO;
       }
-      guideRect = {
-        x: (videoW - gw) / 2,
-        y: (videoH - gh) / 2,
-        w: gw,
-        h: gh
-      };
-      offscreen.width  = videoW;
-      offscreen.height = videoH;
-      canvas.width     = videoW;
-      canvas.height    = videoH;
+      const gx = offsetX + (dispW - gw)/2;
+      const gy = offsetY + (dispH - gh)/2;
 
-      // Draw white guides once immediately
-      drawGuides(false);
-    }
+      guideRect = { x: gx, y: gy, w: gw, h: gh };
 
-    // ─── Draw “L” corners (white or green) + rule-of-thirds ───
-    function drawGuides(isGreen) {
-      const { x, y, w, h } = guideRect;
-      const L = 40; // bracket arm length
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-      ctx.lineWidth = 6;
-      ctx.strokeStyle = isGreen ? '#0f0' : '#fff';
+      // Position each of the four corner DIVs (40×40) at the corners of that guide
+      const L = 40; // corner size (in CSS pixels)
       // Top-left
-      ctx.beginPath();
-      ctx.moveTo(x, y + L);
-      ctx.lineTo(x, y);
-      ctx.lineTo(x + L, y);
-      ctx.stroke();
+      cornerTL.style.left = `${gx}px`;
+      cornerTL.style.top  = `${gy}px`;
       // Top-right
-      ctx.beginPath();
-      ctx.moveTo(x + w - L, y);
-      ctx.lineTo(x + w, y);
-      ctx.lineTo(x + w, y + L);
-      ctx.stroke();
-      // Bottom-right
-      ctx.beginPath();
-      ctx.moveTo(x + w, y + h - L);
-      ctx.lineTo(x + w, y + h);
-      ctx.lineTo(x + w - L, y + h);
-      ctx.stroke();
+      cornerTR.style.left = `${gx + gw - L}px`;
+      cornerTR.style.top  = `${gy}px`;
       // Bottom-left
-      ctx.beginPath();
-      ctx.moveTo(x + L, y + h);
-      ctx.lineTo(x, y + h);
-      ctx.lineTo(x, y + h - L);
-      ctx.stroke();
+      cornerBL.style.left = `${gx}px`;
+      cornerBL.style.top  = `${gy + gh - L}px`;
+      // Bottom-right
+      cornerBR.style.left = `${gx + gw - L}px`;
+      cornerBR.style.top  = `${gy + gh - L}px`;
 
-      // Rule‐of‐thirds grid
-      ctx.lineWidth   = 1;
-      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-      for (let i = 1; i < 3; i++) {
-        // vertical lines
-        ctx.beginPath();
-        ctx.moveTo(x + (w * i)/3, y);
-        ctx.lineTo(x + (w * i)/3, y + h);
-        ctx.stroke();
-        // horizontal lines
-        ctx.beginPath();
-        ctx.moveTo(x, y + (h * i)/3);
-        ctx.lineTo(x + w, y + (h * i)/3);
-        ctx.stroke();
-      }
+      // Hide corners until we need them (they’ll be white by default)
+      cornerTL.style.display = 'block';
+      cornerTR.style.display = 'block';
+      cornerBL.style.display = 'block';
+      cornerBR.style.display = 'block';
 
-      // Position the hint below the bottom edge
-      hint.style.top = `${y + h + 20}px`;
+      // Make sure offscreen canvas matches video’s native resolution
+      offscreen.width  = videoEl.videoWidth;
+      offscreen.height = videoEl.videoHeight;
     }
 
-    // ─── OCR helper: native TextDetector or Tesseract fallback ───
+    // ─── OCR helper: try native TextDetector, else fallback to Tesseract.js ───
     async function detectTextSKINTELLI(blob) {
       if ('TextDetector' in window) {
         try {
@@ -280,33 +292,33 @@
           const bmp      = await createImageBitmap(blob);
           const results  = await detector.detect(bmp);
           bmp.close();
-          return results.some(r => /SKINTELLI/i.test(r.rawValue));
+          return results.some(r => OCR_PATTERN.test(r.rawValue));
         } catch (e) {
           // fallback to Tesseract if native fails
         }
       }
       if (!tesseractWorker) {
         tesseractWorker = Tesseract.createWorker({
-          logger: m => console.log(m) // optional logs
+          logger: m => console.log(m) // optional
         });
         await tesseractWorker.load();
         await tesseractWorker.loadLanguage('eng');
         await tesseractWorker.initialize('eng');
       }
       const { data:{ text } } = await tesseractWorker.recognize(blob);
-      return /SKINTELLI/i.test(text);
+      return OCR_PATTERN.test(text);
     }
 
-    // ─── Called on first tap to start the camera ───
+    // ─── Called on first tap (inside #wrapper) to enable the camera ───
     async function enableCamera() {
-      // Remove tap listeners so it only runs once
+      // remove both listeners so it only triggers once
       wrapper.removeEventListener('click', enableCamera);
       wrapper.removeEventListener('touchstart', enableCamera);
 
-      // Hide banner immediately
+      // hide the “Tap anywhere…” text immediately
       msg.style.display = 'none';
 
-      // Request camera permission & start
+      // ask for camera stream
       let stream;
       try {
         stream = await navigator.mediaDevices.getUserMedia({
@@ -314,84 +326,124 @@
           audio: false
         });
         videoEl.srcObject = stream;
-        await videoEl.play(); // must be in tap handler to suppress iOS ▶︎
+        // must call play() inside this user-gesture on iOS
+        await videoEl.play();
       } catch (err) {
         fatal.textContent = 'Camera error:\n' + (err.message || err.name);
         fatal.style.display = 'flex';
         return;
       }
 
-      // Wait until we know the video’s dimensions
-      await new Promise(r => { videoEl.onloadedmetadata = r; });
+      // wait for metadata so we know videoEl.clientWidth/clientHeight
+      await new Promise(r => videoEl.onloadedmetadata = r);
 
-      // Build and draw white guides right away
-      buildGuide(videoEl.videoWidth, videoEl.videoHeight);
+      // build + show the four white corners
+      buildGuide();
 
-      // Start the continuous detection loop
+      // start the detection loop
       requestAnimationFrame(detectLoop);
     }
 
-    // ─── Main loop: 1) Rectangle detection → 2) OCR → 3) Draw guides & enable shutter ───
+    // ─── Main detection loop: rectangle → OCR → corner color & hint → continue ───
     async function detectLoop() {
+      // draw the current video frame into the offscreen (native-resolution) canvas
       const offCtx = offscreen.getContext('2d');
       offCtx.drawImage(videoEl, 0, 0);
 
-      const { x, y, w, h } = guideRect;
-      const roiData = offCtx.getImageData(x, y, w, h);
+      // compute the crop coordinates in “video-native-pixels”:
+      const nvRect = videoEl.getBoundingClientRect();
+      const dvW = nvRect.width, dvH = nvRect.height;
+      const nwW = videoEl.videoWidth, nwH = videoEl.videoHeight;
+      // ratio between displayed dims and native dims:
+      const scaleX = nwW / dvW, scaleY = nwH / dvH;
 
-      // 1) jScanify rectangle detection
-      const quads = window.jscanify.detect(roiData);
-      let rectFound = false;
+      // we already have guideRect in display‐pixel coords (gx,gy,gw,gh)
+      const { x: gx, y: gy, w: gw, h: gh } = guideRect;
+      // convert to native-pixel coords:
+      const nx = (gx - nvRect.left) * scaleX;
+      const ny = (gy - nvRect.top)  * scaleY;
+      const nw = gw * scaleX;
+      const nh = gh * scaleY;
+
+      // 1) ask jScanify to detect any big quad inside that native‐pixel ROI
+      const roiData = offCtx.getImageData(nx, ny, nw, nh);
+      const quads   = window.jscanify.detect(roiData);
+      let rectOK = false;
       if (quads.length) {
         const q = quads[0];
+        // measure edge‐lengths in ROI space
         const bw = Math.hypot(q[1].x - q[0].x, q[1].y - q[0].y);
         const bh = Math.hypot(q[3].x - q[0].x, q[3].y - q[0].y);
-        if (bw / w >= MIN_COVER && bh / h >= MIN_COVER) {
-          rectFound = true;
+        if (bw / nw >= MIN_COVER && bh / nh >= MIN_COVER) {
+          rectOK = true;
         }
       }
 
-      // 2) If rectangle is found, run OCR (debounced)
-      let ocrFound = false;
+      // 2) if rectangle found, run OCR (debounced by OCR_DEBOUNCE ms)
+      let ocrOK = false;
       const now = Date.now();
-      if (rectFound && now - lastOCRTime > OCR_DEBOUNCE) {
+      if (rectOK && now - lastOCRTime > OCR_DEBOUNCE) {
         lastOCRTime = now;
+        // convert only the ROI (native-pixel) to a JPEG Blob
         const blob = await new Promise(cb => offscreen.toBlob(cb, 'image/jpeg', 0.6));
-        ocrFound = await detectTextSKINTELLI(blob);
+        ocrOK = await detectTextSKINTELLI(blob);
       }
 
-      // If both rect and OCR passed, we consider the card “detected”
-      cardDetected = rectFound && ocrFound;
+      // if both rect + OCR pass, cardDetected = true
+      cardDetected = rectOK && ocrOK;
 
-      // 3) Draw guides (green if cardDetected, else white)
-      drawGuides(cardDetected);
-
-      // 4) Update hint text and shutter highlight
+      // 3) update corner-colors and hint text
+      if (cardDetected) {
+        cornerTL.classList.add('ready');
+        cornerTR.classList.add('ready');
+        cornerBL.classList.add('ready');
+        cornerBR.classList.add('ready');
+      } else {
+        cornerTL.classList.remove('ready');
+        cornerTR.classList.remove('ready');
+        cornerBL.classList.remove('ready');
+        cornerBR.classList.remove('ready');
+      }
       hint.textContent = cardDetected
         ? 'Hold steady and press shutter'
-        : rectFound
+        : rectOK
           ? 'Reading card…'
-          : 'Move card fully inside brackets';
+          : 'Move card fully inside corners';
+
+      // 4) highlight the shutter’s inner circle if cardDetected
       shutter.classList.toggle('ready', cardDetected);
 
+      // loop again
       requestAnimationFrame(detectLoop);
     }
 
-    // ─── Shutter: Always enabled.  If cardDetected, crop to guide; else capture full frame ───
+    // ─── Shutter click: always enabled, but if cardDetected crops → else full frame ───
     shutter.addEventListener('click', () => {
+      // draw one last frame into offscreen
       const offCtx = offscreen.getContext('2d');
       offCtx.drawImage(videoEl, 0, 0);
 
-      const { x, y, w, h } = guideRect;
+      // get the native‐pixel mapping again (same as detectLoop)
+      const nvRect = videoEl.getBoundingClientRect();
+      const dvW = nvRect.width, dvH = nvRect.height;
+      const nwW = videoEl.videoWidth, nwH = videoEl.videoHeight;
+      const scaleX = nwW / dvW, scaleY = nwH / dvH;
+
+      const { x: gx, y: gy, w: gw, h: gh } = guideRect;
+      const nx = (gx - nvRect.left) * scaleX;
+      const ny = (gy - nvRect.top)  * scaleY;
+      const nw = gw * scaleX;
+      const nh = gh * scaleY;
+
       const outCanvas = document.createElement('canvas');
       if (cardDetected) {
-        // Crop → scale to 1280 × (1280/CARD_RATIO)
+        // crop to guide region (native pixels) → scale to 1280×(1280/CARD_RATIO)
         outCanvas.width  = OUTPUT_W;
         outCanvas.height = Math.round(OUTPUT_W / CARD_RATIO);
         const outCtx = outCanvas.getContext('2d');
-        outCtx.drawImage(offscreen, x, y, w, h, 0, 0, outCanvas.width, outCanvas.height);
+        outCtx.drawImage(offscreen, nx, ny, nw, nh, 0, 0, outCanvas.width, outCanvas.height);
       } else {
-        // No card detected yet: just capture full frame at video resolution
+        // no card detected: just take the full frame (native resolution)
         outCanvas.width  = offscreen.width;
         outCanvas.height = offscreen.height;
         const outCtx = outCanvas.getContext('2d');
@@ -406,9 +458,7 @@
       download.onclick = () => {
         const a = document.createElement('a');
         a.href = jpegUrl;
-        a.download = cardDetected
-          ? 'skintelli_card.jpg'
-          : 'full_frame.jpg';
+        a.download = cardDetected ? 'skintelli_card.jpg' : 'full_frame.jpg';
         a.click();
       };
       retake.onclick = () => {
@@ -419,9 +469,9 @@
       };
     });
 
-    // ─── Bind the first tap listeners to #wrapper ───
+    // ─── Bind the first “Tap” listeners to the wrapper ───
     wrapper.addEventListener('touchstart', enableCamera, { once: true });
-    wrapper.addEventListener('click', enableCamera, { once: true });
+    wrapper.addEventListener('click',      enableCamera, { once: true });
   </script>
 </body>
 </html>
