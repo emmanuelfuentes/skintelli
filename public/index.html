@@ -48,11 +48,11 @@ canvas{pointer-events:none;z-index:10}
 <script type="module">
 /* ===== tweakables ===== */
 const CARD_RATIO   = 1280/726;     // 1.76 : 1
-const GUIDE_MARGIN = 0.08;         // 8 % padding
+const GUIDE_MARGIN = 0.10;         // 8 % padding
 const BRIGHT_MIN   = 55;           // mean luminance
 const COVER_MIN    = 0.85;         // bounding-box coverage
-const AR_TOL       = 0.15;         // ±15 % of true ratio
-const EDGE_MIN     = 200;          // # edge pixels
+const AR_TOL       = 0.35;         // ±15 % of true ratio
+const EDGE_MIN     = 400;          // # edge pixels
 const DEST_W       = 1280;         // output width
 
 /* ===== DOM refs ===== */
