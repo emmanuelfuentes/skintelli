@@ -4,13 +4,14 @@
   <meta charset="utf-8">
   <title>Skintelli Card Capture</title>
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <!-- jScanify: lightweight rectangle detector (~120 KB gz) -->
+
+  <!-- jScanify: lightweight rectangle detector (≈120 KB gz) -->
   <script src="https://cdn.jsdelivr.net/npm/jscanify@1.0.4/dist/jscanify.min.js"></script>
-  <!-- Tesseract.js: fallback OCR (~180 KB gz) -->
+  <!-- Tesseract.js: fallback OCR (≈180 KB gz; only used if native TextDetector is missing) -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 
   <style>
-    /* ——————————— Layout & Styling ——————————— */
+    /* ─── Base Layout ─── */
     html, body {
       margin: 0;
       height: 100%;
@@ -37,7 +38,8 @@
       pointer-events: none;
       z-index: 10;
     }
-    /* Hide iOS white ▶︎ overlay */
+
+    /* Hide iOS white ▶︎ play button */
     video::-webkit-media-controls-start-playback-button {
       display: none !important;
       -webkit-appearance: none;
@@ -50,7 +52,7 @@
       transform: translateX(-50%);
       padding: 6px 14px;
       border-radius: 8px;
-      background: rgba(0,0,0,0.7);
+      background: rgba(0, 0, 0, 0.7);
       color: #fff;
       font-size: 15px;
       z-index: 20;
@@ -75,7 +77,7 @@
       height: 80px;
       border-radius: 50%;
       border: 4px solid #fff;
-      background: rgba(255,255,255,0.2);
+      background: rgba(255, 255, 255, 0.2);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -105,7 +107,7 @@
       display: none;
       align-items: center;
       justify-content: center;
-      background: rgba(0,0,0,0.85);
+      background: rgba(0, 0, 0, 0.85);
       color: #fff;
       font-size: 17px;
       text-align: center;
@@ -113,7 +115,7 @@
       z-index: 30;
     }
 
-    /* Preview stage */
+    /* ─── Preview Stage ─── */
     #preview {
       display: none;
       flex-direction: column;
@@ -137,7 +139,7 @@
   </style>
 </head>
 <body>
-  <!-- ─── LIVE CAMERA STAGE ─── -->
+  <!-- ▸ Live Camera Stage ▸ -->
   <div id="live">
     <video id="video" playsinline muted disablepictureinpicture></video>
     <canvas id="overlay"></canvas>
@@ -147,9 +149,9 @@
     <div id="fatal"></div>
   </div>
 
-  <!-- ─── PREVIEW STAGE ─── -->
+  <!-- ▸ Capture Preview ▸ -->
   <div id="preview">
-    <img id="shot" alt="Captured card">
+    <img id="shot" alt="Captured Card">
     <div class="ctrls">
       <button id="download">Download</button>
       <button id="retake">Retake</button>
@@ -157,15 +159,15 @@
   </div>
 
   <script>
-    // ─── CONFIG ───
-    const CARD_RATIO = 1280/726;            // Landscape orientation
-    const PADDING = 0.08;                   // 8% padding on each side
-    const MIN_COVER = 0.90;                 // Rectangle must cover ≥90% of guide
-    const OCR_TEXT = /SKINTELLI/i;          // Case-insensitive match
-    const OCR_DEBOUNCE_MS = 800;            // Only run OCR once every 800 ms
-    const OUTPUT_WIDTH = 1280;              // Output JPEG width
+    // ─── Configuration ───
+    const CARD_RATIO    = 1280 / 726;          // Landscape card aspect ratio
+    const PADDING       = 0.08;                // 8% padding on edges
+    const MIN_COVER     = 0.90;                // Rectangle must cover ≥90% of guide
+    const OCR_PATTERN   = /SKINTELLI/i;        // Regex to detect “SKINTELLI” by OCR
+    const OCR_DEBOUNCE  = 800;                 // OCR only every 800 ms if rect present
+    const OUTPUT_WIDTH  = 1280;                // Output JPEG width
 
-    // ─── DOM REFERENCE ───
+    // ─── DOM References ───
     const videoElem = document.getElementById('video');
     const overlay   = document.getElementById('overlay');
     const ctx       = overlay.getContext('2d');
@@ -175,21 +177,19 @@
     const fatal     = document.getElementById('fatal');
     const preview   = document.getElementById('preview');
     const shotImg   = document.getElementById('shot');
-    const dlBtn     = document.getElementById('download');
-    const rtBtn     = document.getElementById('retake');
+    const download  = document.getElementById('download');
+    const retake    = document.getElementById('retake');
     const liveDiv   = document.getElementById('live');
 
-    // ─── STATE ───
-    let guideRect = { x:0, y:0, w:0, h:0 };
+    // ─── State ───
+    let guideRect       = { x: 0, y: 0, w: 0, h: 0 };
     let readyForCapture = false;
-    let lastOcrTimestamp = 0;
-    let tesseractWorker = null;   // Only create if native TextDetector missing
-    const offscreen = document.createElement('canvas');
+    let lastOcrTime     = 0;
+    let tesseractWorker = null;                // Initialized only if needed
+    const offscreen     = document.createElement('canvas');
 
-    // ─── UTILITY FUNCTIONS ───
+    // ─── Build the horizontal guide once we know video dimensions ───
     function setGuide(w, h) {
-      // We want a horizontal guide with CARD_RATIO (≈1.76)
-      // that has PADDING (8%) around it vertically and horizontally.
       const maxW = w * (1 - PADDING * 2);
       let gw = maxW, gh = gw / CARD_RATIO;
       if (gh > h * (1 - PADDING * 2)) {
@@ -204,88 +204,91 @@
       };
     }
 
+    // ─── Draw L-corner brackets (white or green) + rule-of-thirds grid ───
     function drawBrackets(isGreen) {
       const { x, y, w, h } = guideRect;
-      const L = 40;
-      ctx.clearRect(0, 0, overlay.width, overlay.height);
+      const L = 40; // bracket arm length
 
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
       ctx.lineWidth = 6;
       ctx.strokeStyle = isGreen ? '#0f0' : '#fff';
+
+      // Top-left corner
       ctx.beginPath();
-      // Top-left
       ctx.moveTo(x, y + L);
       ctx.lineTo(x, y);
       ctx.lineTo(x + L, y);
       ctx.stroke();
-      // Top-right
+
+      // Top-right corner
       ctx.beginPath();
       ctx.moveTo(x + w - L, y);
       ctx.lineTo(x + w, y);
       ctx.lineTo(x + w, y + L);
       ctx.stroke();
-      // Bottom-right
+
+      // Bottom-right corner
       ctx.beginPath();
       ctx.moveTo(x + w, y + h - L);
       ctx.lineTo(x + w, y + h);
       ctx.lineTo(x + w - L, y + h);
       ctx.stroke();
-      // Bottom-left
+
+      // Bottom-left corner
       ctx.beginPath();
       ctx.moveTo(x + L, y + h);
       ctx.lineTo(x, y + h);
       ctx.lineTo(x, y + h - L);
       ctx.stroke();
 
-      // Rule-of-thirds grid
+      // Draw rule-of-thirds grid inside the rectangle
       ctx.lineWidth = 1;
       ctx.strokeStyle = 'rgba(255,255,255,0.35)';
       for (let i = 1; i < 3; i++) {
-        // vertical lines
+        // Vertical third
         ctx.beginPath();
         ctx.moveTo(x + (w * i) / 3, y);
         ctx.lineTo(x + (w * i) / 3, y + h);
         ctx.stroke();
-        // horizontal lines
+        // Horizontal third
         ctx.beginPath();
         ctx.moveTo(x, y + (h * i) / 3);
         ctx.lineTo(x + w, y + (h * i) / 3);
         ctx.stroke();
       }
 
-      // Put the hint text 20px below the bottom of the guide
+      // Position the “hint” text 20px below the bottom edge of the guide
       hint.style.top = `${y + h + 20}px`;
     }
 
-    async function detectTextSKINTELLI(blob) {
-      // 1) Try native Shape Detection API
+    // ─── OCR: Try native TextDetector, else fallback to Tesseract.js ───
+    async function detectSkintelliText(blob) {
       if ('TextDetector' in window) {
         try {
-          const td = new TextDetector();
-          // createImageBitmap gives us a fast ImageBitmap from the Blob
-          const imageBitmap = await createImageBitmap(blob);
-          const results = await td.detect(imageBitmap);
-          imageBitmap.close();
-          return results.some(r => OCR_TEXT.test(r.rawValue));
+          const detector = new TextDetector();
+          const imgBitmap = await createImageBitmap(blob);
+          const results   = await detector.detect(imgBitmap);
+          imgBitmap.close();
+          return results.some(r => OCR_PATTERN.test(r.rawValue));
         } catch (e) {
-          // If any error, fall back to Tesseract below
+          // Fallback to Tesseract if anything goes wrong
         }
       }
-      // 2) Fallback: Tesseract.js
+      // Fallback to Tesseract.js
       if (!tesseractWorker) {
         tesseractWorker = Tesseract.createWorker({
-          logger: m => console.log(m)
+          logger: m => console.log(m) // optional OCR progress logs
         });
         await tesseractWorker.load();
         await tesseractWorker.loadLanguage('eng');
         await tesseractWorker.initialize('eng');
       }
       const { data: { text } } = await tesseractWorker.recognize(blob);
-      return OCR_TEXT.test(text);
+      return OCR_PATTERN.test(text);
     }
 
-    // Called when the user first taps the screen
+    // ─── Camera is enabled inside this user‐gesture handler ───
     async function enableCamera() {
-      // Prevent further taps from re-triggering
       document.body.removeEventListener('click', enableCamera);
       document.body.removeEventListener('touchstart', enableCamera);
 
@@ -294,45 +297,45 @@
           video: { facingMode: { ideal: 'environment' } }
         });
         videoElem.srcObject = stream;
-        // Play inside the same user-gesture
+        // Call play() inside the tap handler → iOS won’t show the ▶︎ overlay
         await videoElem.play();
       } catch (err) {
         msg.textContent = `Camera error: ${err.message || err.name}`;
         return;
       }
 
-      // Wait until video metadata is ready (dimensions known)
+      // Wait until video metadata is available (so width/height are known)
       await new Promise(r => videoElem.onloadedmetadata = r);
 
-      // Size the canvases
+      // Size both canvases
       overlay.width = offscreen.width = videoElem.videoWidth;
       overlay.height = offscreen.height = videoElem.videoHeight;
       setGuide(overlay.width, overlay.height);
 
-      // Remove the “Tap anywhere” text
-      msg.textContent = 'Align card horizontally';
+      // Hide the “Tap anywhere” banner
+      msg.style.display = 'none';
 
-      // Immediately draw the white brackets
+      // Immediately draw white brackets
       drawBrackets(false);
 
-      // Start the detection loop
+      // Kick off detection loop
       requestAnimationFrame(detectionLoop);
     }
 
-    // Main loop: 1) rectangle detect, 2) OCR, 3) color brackets & activate shutter if OK
+    // ─── Main detection loop: rectangle → OCR → green guide → enable shutter ───
     async function detectionLoop() {
       const offCtx = offscreen.getContext('2d');
       offCtx.drawImage(videoElem, 0, 0);
 
       const { x, y, w, h } = guideRect;
-      const roi = offCtx.getImageData(x, y, w, h);
-
-      // 1) jScanify rectangle detection
-      const quads = window.jscanify.detect(roi);
+      const roiData = offCtx.getImageData(x, y, w, h);
       let rectOK = false;
+
+      // 1) Check for a large rectangle (jScanify)
+      const quads = window.jscanify.detect(roiData);
       if (quads.length) {
         const q = quads[0];
-        // jScanify gives local coords (within roi). Measure width/height:
+        // Each quad point is relative to the ROI. Measure the edge lengths:
         const bw = Math.hypot(q[1].x - q[0].x, q[1].y - q[0].y);
         const bh = Math.hypot(q[3].x - q[0].x, q[3].y - q[0].y);
         if (bw / w >= MIN_COVER && bh / h >= MIN_COVER) {
@@ -340,19 +343,19 @@
         }
       }
 
-      // 2) If rectangle OK, run OCR (debounced)
+      // 2) If we have a rectangle, run OCR (debounced)
       let ocrOK = false;
       const now = Date.now();
-      if (rectOK && now - lastOcrTimestamp > OCR_DEBOUNCE_MS) {
-        lastOcrTimestamp = now;
+      if (rectOK && now - lastOcrTime > OCR_DEBOUNCE) {
+        lastOcrTime = now;
+        // Export ROI to a JPEG Blob
         const blob = await new Promise(cb => offscreen.toBlob(cb, 'image/jpeg', 0.6));
-        ocrOK = await detectTextSKINTELLI(blob);
+        ocrOK = await detectSkintelliText(blob);
       }
 
-      // final readiness
       readyForCapture = rectOK && ocrOK;
 
-      // 3) Draw brackets & update UI
+      // 3) Draw brackets (green if ready, else white)
       drawBrackets(readyForCapture);
       hint.textContent = readyForCapture
         ? 'Hold steady and press shutter'
@@ -364,7 +367,7 @@
       requestAnimationFrame(detectionLoop);
     }
 
-    // Shutter button behavior
+    // ─── Capture / Preview logic ───
     snapBtn.addEventListener('click', () => {
       if (!readyForCapture) return;
 
@@ -378,14 +381,14 @@
       const outCtx = outCanvas.getContext('2d');
       outCtx.drawImage(offscreen, x, y, w, h, 0, 0, outCanvas.width, outCanvas.height);
 
-      const finalJpeg = outCanvas.toDataURL('image/jpeg', 0.9);
+      const dataUrl = outCanvas.toDataURL('image/jpeg', 0.9);
       liveDiv.style.display = 'none';
       preview.style.display = 'flex';
-      shotImg.src = finalJpeg;
+      shotImg.src = dataUrl;
 
       download.onclick = () => {
         const a = document.createElement('a');
-        a.href = finalJpeg;
+        a.href = dataUrl;
         a.download = 'skintelli_card.jpg';
         a.click();
       };
@@ -397,7 +400,7 @@
       };
     });
 
-    // Kick things off on any tap (touchstart or click)
+    // ─── Start on first tap (touch or click) ───
     document.body.addEventListener('touchstart', enableCamera, { once: true });
     document.body.addEventListener('click', enableCamera, { once: true });
   </script>
