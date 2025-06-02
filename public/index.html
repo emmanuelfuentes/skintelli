@@ -2,11 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Skintelli Card Capture (CDN-Only, Fixed Guides)</title>
+  <title>Skintelli Card Capture (CDN-Only, CSS-Centered Guides)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
 
   <!-- ─── CDN LIBRARIES ─── -->
-  <!-- jScanify: rectangle detector (~120 KB gz) -->
+  <!-- jScanify: tiny WASM→JS rectangle detector (~120 KB gz) -->
   <script src="https://cdn.jsdelivr.net/npm/jscanify@1.0.4/dist/jscanify.min.js"></script>
   <!-- Tesseract.js: fallback OCR (~180 KB gz) -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
@@ -30,13 +30,12 @@
     }
     video {
       position: absolute;
-      top: 0;
-      left: 0;
+      top: 0; left: 0;
       width: 100%;
       height: 100%;
       object-fit: cover;
     }
-    /* Hide iOS ▶︎ icon */
+    /* Hide the iOS “▶︎” play button overlay */
     video::-webkit-media-controls-start-playback-button {
       display: none !important;
       -webkit-appearance: none;
@@ -48,16 +47,78 @@
       top: 20px;
       left: 50%;
       transform: translateX(-50%);
-      padding: 8px 14px;
+      padding: 8px 16px;
       background: rgba(0,0,0,0.7);
       color: #fff;
       font-size: 16px;
       border-radius: 8px;
       z-index: 20;
       text-align: center;
+      pointer-events: none;
     }
 
-    /* ─── Hint Text Below Guides ─── */
+    /* ─── Centered Guide Container ───  
+       We use CSS to center a box that is 84% of the viewport width,
+       with the fixed card aspect ratio (1280×726). Inside this box
+       we place four small corner DIVs (each 40×40) to form “L” corners.
+    */
+    #guide {
+      position: absolute;
+      width: 84vw;                                   /* 84% of viewport width */
+      aspect-ratio: 1280 / 726;                      /* preserve card ratio */
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      z-index: 20;
+    }
+    .corner {
+      position: absolute;
+      width: 40px;
+      height: 40px;
+    }
+    /* Top-Left corner */
+    .corner.tl {
+      top: 0;
+      left: 0;
+    }
+    .corner.tl .inner {
+      border-left: 6px solid #fff;
+      border-top: 6px solid #fff;
+    }
+    /* Top-Right corner */
+    .corner.tr {
+      top: 0;
+      right: 0;
+    }
+    .corner.tr .inner {
+      border-right: 6px solid #fff;
+      border-top: 6px solid #fff;
+    }
+    /* Bottom-Left corner */
+    .corner.bl {
+      bottom: 0;
+      left: 0;
+    }
+    .corner.bl .inner {
+      border-left: 6px solid #fff;
+      border-bottom: 6px solid #fff;
+    }
+    /* Bottom-Right corner */
+    .corner.br {
+      bottom: 0;
+      right: 0;
+    }
+    .corner.br .inner {
+      border-right: 6px solid #fff;
+      border-bottom: 6px solid #fff;
+    }
+    /* When the card is detected, turn corners green */
+    .corner.ready .inner {
+      border-color: #0f0 !important;
+    }
+
+    /* ─── Hint Text Below the Guide ─── */
     #hint {
       position: absolute;
       left: 50%;
@@ -66,9 +127,10 @@
       font-size: 15px;
       text-align: center;
       z-index: 20;
+      pointer-events: none;
     }
 
-    /* ─── Shutter Button ─── */
+    /* ─── Shutter Button (Bottom Center) ─── */
     #shutter {
       position: absolute;
       bottom: 40px;
@@ -82,7 +144,6 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      opacity: 1;  /* clickable even if card not detected */
       z-index: 20;
     }
     #shutter::after {
@@ -90,49 +151,10 @@
       width: 54px;
       height: 54px;
       border-radius: 50%;
-      background: #fff; /* white by default */
+      background: #fff;         /* white circle by default */
     }
     #shutter.ready::after {
-      background: #0f0; /* green when cardDetected = true */
-    }
-
-    /* ─── Four Corner Guides ───
-       Each corner is a 40×40 DIV placed in CSS‐pixel space.
-    */
-    .corner {
-      position: absolute;
-      width: 40px;
-      height: 40px;
-      z-index: 20;
-    }
-    .corner .inner {
-      position: absolute;
-      width: 100%;
-      height: 100%;
-    }
-    /* Top-Left */
-    .corner.tl .inner {
-      border-left: 6px solid #fff;
-      border-top: 6px solid #fff;
-    }
-    /* Top-Right */
-    .corner.tr .inner {
-      border-right: 6px solid #fff;
-      border-top: 6px solid #fff;
-    }
-    /* Bottom-Left */
-    .corner.bl .inner {
-      border-left: 6px solid #fff;
-      border-bottom: 6px solid #fff;
-    }
-    /* Bottom-Right */
-    .corner.br .inner {
-      border-right: 6px solid #fff;
-      border-bottom: 6px solid #fff;
-    }
-    /* Turn corners green when ready */
-    .corner.ready .inner {
-      border-color: #0f0 !important;
+      background: #0f0;         /* green when cardDetected */
     }
 
     /* ─── Fatal Error Overlay ─── */
@@ -186,11 +208,13 @@
   <div id="wrapper">
     <video id="video" playsinline muted></video>
 
-    <!-- Four corner DIVs (40×40 each) -->
-    <div id="corner_tl" class="corner tl"><div class="inner"></div></div>
-    <div id="corner_tr" class="corner tr"><div class="inner"></div></div>
-    <div id="corner_bl" class="corner bl"><div class="inner"></div></div>
-    <div id="corner_br" class="corner br"><div class="inner"></div></div>
+    <!-- Centered guide box with four corners -->
+    <div id="guide">
+      <div id="corner_tl" class="corner tl"><div class="inner"></div></div>
+      <div id="corner_tr" class="corner tr"><div class="inner"></div></div>
+      <div id="corner_bl" class="corner bl"><div class="inner"></div></div>
+      <div id="corner_br" class="corner br"><div class="inner"></div></div>
+    </div>
 
     <div id="msg">Tap anywhere to enable camera</div>
     <div id="hint"></div>
@@ -209,12 +233,11 @@
 
   <script>
     // ─── Configuration ───
-    const CARD_RATIO   = 1280/726;    // horizontal card aspect ratio
-    const PADDING      = 0.08;        // 8% margin around guides
-    const MIN_COVER    = 0.90;        // require 90% of guide to detect rectangle
-    const OCR_PATTERN  = /SKINTELLI/i;
-    const OCR_DEBOUNCE = 800;         // ms between OCR attempts
-    const OUTPUT_W     = 1280;        // JPEG output width (height=OUTPUT_W/CARD_RATIO)
+    const CARD_RATIO   = 1280 / 726;    // card aspect ratio (landscape)
+    const MIN_COVER    = 0.90;          // require 90% of guide to detect rectangle
+    const OCR_PATTERN  = /SKINTELLI/i;  // look for “SKINTELLI”
+    const OCR_DEBOUNCE = 800;           // ms between OCR attempts
+    const OUTPUT_W     = 1280;          // JPEG output width (height = OUTPUT_W / CARD_RATIO)
 
     // ─── DOM References ───
     const wrapper   = document.getElementById('wrapper');
@@ -227,65 +250,22 @@
     const captured  = document.getElementById('captured');
     const download  = document.getElementById('download');
     const retake    = document.getElementById('retake');
-    // Four corner DIVs
+    // four corner DIVs
     const cornerTL  = document.getElementById('corner_tl');
     const cornerTR  = document.getElementById('corner_tr');
     const cornerBL  = document.getElementById('corner_bl');
     const cornerBR  = document.getElementById('corner_br');
+    // the CSS-centered parent of those corners
+    const guideBox  = document.getElementById('guide');
 
     // ─── State Variables ───
-    let guideRect       = { x: 0, y: 0, w: 0, h: 0 };
     let cardDetected    = false;
     let lastOCRTime     = 0;
     let tesseractWorker = null;
-    // Offscreen canvas (maps to video’s native resolution)
+    // Offscreen canvas (will be set to video’s native resolution)
     const offscreen = document.createElement('canvas');
 
-    // ─── Build the horizontal guide based on window.innerWidth/innerHeight ───
-    function buildGuide() {
-      // Full viewport size in CSS pixels:
-      const W = window.innerWidth;
-      const H = window.innerHeight;
-
-      // Compute guide dimensions in CSS pixels:
-      const maxW = W * (1 - PADDING * 2);
-      let gw = maxW;
-      let gh = gw / CARD_RATIO;
-      if (gh > H * (1 - PADDING * 2)) {
-        gh = H * (1 - PADDING * 2);
-        gw = gh * CARD_RATIO;
-      }
-      const gx = (W - gw) / 2;
-      const gy = (H - gh) / 2;
-      guideRect = { x: gx, y: gy, w: gw, h: gh };
-
-      // Position the four corner DIVs (each 40×40 CSS pixels):
-      const L = 40;
-      // Top-left
-      cornerTL.style.left = `${gx}px`;
-      cornerTL.style.top  = `${gy}px`;
-      // Top-right
-      cornerTR.style.left = `${gx + gw - L}px`;
-      cornerTR.style.top  = `${gy}px`;
-      // Bottom-left
-      cornerBL.style.left = `${gx}px`;
-      cornerBL.style.top  = `${gy + gh - L}px`;
-      // Bottom-right
-      cornerBR.style.left = `${gx + gw - L}px`;
-      cornerBR.style.top  = `${gy + gh - L}px`;
-
-      // Make sure they’re visible (white by default):
-      cornerTL.style.display = 'block';
-      cornerTR.style.display = 'block';
-      cornerBL.style.display = 'block';
-      cornerBR.style.display = 'block';
-
-      // Size the offscreen canvas to the video’s native resolution
-      offscreen.width  = videoEl.videoWidth;
-      offscreen.height = videoEl.videoHeight;
-    }
-
-    // ─── OCR helper (native TextDetector or Tesseract.js fallback) ───
+    // ─── OCR helper: native TextDetector or Tesseract.js fallback ───
     async function detectTextSKINTELLI(blob) {
       if ('TextDetector' in window) {
         try {
@@ -294,13 +274,13 @@
           const results  = await detector.detect(bmp);
           bmp.close();
           return results.some(r => OCR_PATTERN.test(r.rawValue));
-        } catch (e) {
-          // fallback to Tesseract if native OCR fails
+        } catch (err) {
+          // fallback to Tesseract.js if native fails
         }
       }
       if (!tesseractWorker) {
         tesseractWorker = Tesseract.createWorker({
-          logger: m => console.log(m) // optional logging
+          logger: m => console.log(m) // optional logs
         });
         await tesseractWorker.load();
         await tesseractWorker.loadLanguage('eng');
@@ -310,16 +290,16 @@
       return OCR_PATTERN.test(text);
     }
 
-    // ─── Called on first tap to start camera ───
+    // ─── Called on first tap to enable camera ───
     async function enableCamera() {
-      // Remove both listeners so it only fires once
+      // Remove both listeners, so this fires only once
       wrapper.removeEventListener('click', enableCamera);
       wrapper.removeEventListener('touchstart', enableCamera);
 
-      // Hide message immediately
+      // Hide banner immediately
       msg.style.display = 'none';
 
-      // Request camera stream
+      // Request camera
       let stream;
       try {
         stream = await navigator.mediaDevices.getUserMedia({
@@ -327,7 +307,7 @@
           audio: false
         });
         videoEl.srcObject = stream;
-        // Must call play() inside this tap handler so iOS doesn’t show ▶︎
+        // Must call .play() inside this user-gesture on iOS
         await videoEl.play();
       } catch (err) {
         fatal.textContent = 'Camera error:\n' + (err.message || err.name);
@@ -335,40 +315,43 @@
         return;
       }
 
-      // Wait for metadata so we know videoEl.videoWidth/videoHeight
+      // Wait until metadata is ready (so videoEl.videoWidth/videoHeight exist)
       await new Promise(r => videoEl.onloadedmetadata = r);
 
-      // Build + show the four white corner guides:
-      buildGuide();
+      // Size offscreen canvas to the video’s native resolution
+      offscreen.width  = videoEl.videoWidth;
+      offscreen.height = videoEl.videoHeight;
 
       // Start our detection loop
       requestAnimationFrame(detectLoop);
     }
 
-    // ─── Main detection loop (rect → OCR → color corners + hint → loop) ───
+    // ─── Main loop: rectangle detection → OCR → color corners & hint → loop ───
     async function detectLoop() {
-      // 1) Draw current frame into offscreen (native resolution)
+      // 1) draw current frame into offscreen (native resolution)
       const offCtx = offscreen.getContext('2d');
       offCtx.drawImage(videoEl, 0, 0);
 
-      // 2) Convert guideRect (CSS px) → native pixels
-      // Get the displayed video’s bounding rectangle in CSS px:
+      // 2) convert the CSS-pixel bounding box of #guide → native-pixel coords
+      const guideRectCSS = guideBox.getBoundingClientRect();
       const dispRect = videoEl.getBoundingClientRect();
       const dispW = dispRect.width, dispH = dispRect.height;
       const natW = videoEl.videoWidth, natH = videoEl.videoHeight;
-      // Scale factors from display → native:
       const scaleX = natW / dispW;
       const scaleY = natH / dispH;
-      // guideRect is in CSS px: (gx,gy,gw,gh)
-      const { x: gx, y: gy, w: gw, h: gh } = guideRect;
-      // But we need to subtract video’s top-left corner:
-      const vx = dispRect.left, vy = dispRect.top;
-      const nx = (gx - vx) * scaleX;
-      const ny = (gy - vy) * scaleY;
+
+      // coordinates of guide in CSS px:
+      const gx = guideRectCSS.left;
+      const gy = guideRectCSS.top;
+      const gw = guideRectCSS.width;
+      const gh = guideRectCSS.height;
+      // convert to native px by subtracting video’s top-left and scaling:
+      const nx = (gx - dispRect.left) * scaleX;
+      const ny = (gy - dispRect.top) * scaleY;
       const nw = gw * scaleX;
       const nh = gh * scaleY;
 
-      // 3) jScanify rectangle detection on that ROI (native-pixel)
+      // 3) jScanify rectangle detection on that native-pixel ROI
       const roiData = offCtx.getImageData(nx, ny, nw, nh);
       const quads   = window.jscanify.detect(roiData);
       let rectOK = false;
@@ -381,7 +364,7 @@
         }
       }
 
-      // 4) If rectangle was found, run OCR (debounced)
+      // 4) if rectOK, run OCR once per OCR_DEBOUNCE ms
       let ocrOK = false;
       const now = Date.now();
       if (rectOK && now - lastOCRTime > OCR_DEBOUNCE) {
@@ -390,23 +373,16 @@
         ocrOK = await detectTextSKINTELLI(blob);
       }
 
-      // If both rectOK and ocrOK → cardDetected = true
+      // 5) if both rectOK and ocrOK, cardDetected = true
       cardDetected = rectOK && ocrOK;
 
-      // 5) Color the corners (green if cardDetected, else white)
-      if (cardDetected) {
-        cornerTL.classList.add('ready');
-        cornerTR.classList.add('ready');
-        cornerBL.classList.add('ready');
-        cornerBR.classList.add('ready');
-      } else {
-        cornerTL.classList.remove('ready');
-        cornerTR.classList.remove('ready');
-        cornerBL.classList.remove('ready');
-        cornerBR.classList.remove('ready');
-      }
+      // 6) color the corners (green if cardDetected, else white)
+      [cornerTL, cornerTR, cornerBL, cornerBR].forEach(el => {
+        if (cardDetected) el.classList.add('ready');
+        else             el.classList.remove('ready');
+      });
 
-      // 6) Update hint text & shutter circle color
+      // 7) update hint text & shutter color
       hint.textContent = cardDetected
         ? 'Hold steady and press shutter'
         : rectOK
@@ -415,37 +391,39 @@
 
       shutter.classList.toggle('ready', cardDetected);
 
-      // 7) Loop
+      // 8) loop again
       requestAnimationFrame(detectLoop);
     }
 
-    // ─── Shutter logic: always enabled (white), turns green if cardDetected ───
+    // ─── Shutter logic: always enabled; if cardDetected → crop to guide; else full frame ───
     shutter.addEventListener('click', () => {
-      // Draw one last frame to offscreen
       const offCtx = offscreen.getContext('2d');
       offCtx.drawImage(videoEl, 0, 0);
 
-      // Convert guideRect → native-pixel exactly as in detectLoop
+      // Again convert #guide’s CSS rect → native pixels
+      const guideRectCSS = guideBox.getBoundingClientRect();
       const dispRect = videoEl.getBoundingClientRect();
       const dispW = dispRect.width, dispH = dispRect.height;
       const natW = videoEl.videoWidth, natH = videoEl.videoHeight;
       const scaleX = natW / dispW, scaleY = natH / dispH;
-      const { x: gx, y: gy, w: gw, h: gh } = guideRect;
-      const vx = dispRect.left, vy = dispRect.top;
-      const nx = (gx - vx) * scaleX;
-      const ny = (gy - vy) * scaleY;
+      const gx = guideRectCSS.left;
+      const gy = guideRectCSS.top;
+      const gw = guideRectCSS.width;
+      const gh = guideRectCSS.height;
+      const nx = (gx - dispRect.left) * scaleX;
+      const ny = (gy - dispRect.top) * scaleY;
       const nw = gw * scaleX;
       const nh = gh * scaleY;
 
       const outCanvas = document.createElement('canvas');
       if (cardDetected) {
-        // Crop to guide (native pixels) → scale to 1280 × (1280/CARD_RATIO)
+        // Crop → scale to 1280 × (1280 / CARD_RATIO)
         outCanvas.width  = OUTPUT_W;
         outCanvas.height = Math.round(OUTPUT_W / CARD_RATIO);
         const outCtx = outCanvas.getContext('2d');
         outCtx.drawImage(offscreen, nx, ny, nw, nh, 0, 0, outCanvas.width, outCanvas.height);
       } else {
-        // No card detected: just capture full frame (native resolution)
+        // No cardDetected: just capture full frame (native resolution)
         outCanvas.width  = offscreen.width;
         outCanvas.height = offscreen.height;
         const outCtx = outCanvas.getContext('2d');
@@ -471,7 +449,7 @@
       };
     });
 
-    // ─── Bind first‐tap/first‐touch to enableCamera ───
+    // ─── Bind first “tap” / “click” to enableCamera ───
     wrapper.addEventListener('touchstart', enableCamera, { once: true });
     wrapper.addEventListener('click',      enableCamera, { once: true });
   </script>
