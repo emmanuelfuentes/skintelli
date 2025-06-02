@@ -2,10 +2,10 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Skintelli Card Capture (OpenCV.js, Updated Mapping)</title>
+  <title>Skintelli Card Capture (OpenCV.js + Correct Mapping)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
 
-  <!-- ─── Primary: OpenCV.js from cdnjs ─── -->
+  <!-- ─── Load OpenCV.js from cdnjs, with a fallback to OpenCV.org if needed ─── -->
   <script async
           src="https://cdnjs.cloudflare.com/ajax/libs/opencv/4.5.2/opencv.js"
           onload="onOpenCvLoaded()"
@@ -15,10 +15,8 @@
   <style>
     /* ─── Base Layout ─── */
     html, body {
-      margin: 0;
-      padding: 0;
-      width: 100vw;
-      height: 100vh;
+      margin: 0; padding: 0;
+      width: 100vw; height: 100vh;
       background: #000;
       overflow: hidden;
       font-family: -apple-system, Roboto, Helvetica, Arial, sans-serif;
@@ -34,10 +32,10 @@
       top: 0; left: 0;
       width: 100%;
       height: 100%;
-      object-fit: contain; /* LETTERBOX → 1:1 CSS‐TO‐NATIVE MAPPING */
-      background: #000;    /* Black bars around if aspect differs */
+      object-fit: contain;    /* ensures a 1:1 mapping of displayed video pixels to CSS pixels */
+      background: #000;      /* letterbox bars will be black */
     }
-    /* Hide iOS white ▶︎ icon */
+    /* Hide iOS ▶︎ icon */
     video::-webkit-media-controls-start-playback-button {
       display: none !important;
       -webkit-appearance: none;
@@ -60,7 +58,7 @@
     }
 
     /* ─── Centered Guide Container ───
-       JS will size this: width = 84vw; height = (84vw ÷ 1.75).  */
+       JavaScript will size this to 84vw × (84vw ÷ 1.75) */
     #guide {
       position: absolute;
       left: 50%;
@@ -71,7 +69,7 @@
       /* width + height set in JS */
     }
 
-    /* ─── Four “L” Corners Inside #guide ─── */
+    /* ─── Four Thick “L” Corners Inside #guide ─── */
     .corner {
       position: absolute;
       width: 40px;
@@ -84,8 +82,7 @@
     }
     /* Top-Left */
     .corner.tl {
-      top: 0;
-      left: 0;
+      top: 0; left: 0;
     }
     .corner.tl .inner {
       border-left: 8px solid #fff;
@@ -93,8 +90,7 @@
     }
     /* Top-Right */
     .corner.tr {
-      top: 0;
-      right: 0;
+      top: 0; right: 0;
     }
     .corner.tr .inner {
       border-right: 8px solid #fff;
@@ -102,8 +98,7 @@
     }
     /* Bottom-Left */
     .corner.bl {
-      bottom: 0;
-      left:   0;
+      bottom: 0; left:   0;
     }
     .corner.bl .inner {
       border-left:   8px solid #fff;
@@ -111,14 +106,13 @@
     }
     /* Bottom-Right */
     .corner.br {
-      bottom:  0;
-      right:   0;
+      bottom:  0; right:   0;
     }
     .corner.br .inner {
       border-right:  8px solid #fff;
       border-bottom: 8px solid #fff;
     }
-    /* Turn corners green when cardDetected === true */
+    /* When “cardDetected” is true, flip corners to green */
     .corner.ready .inner {
       border-color: #0f0 !important;
     }
@@ -141,8 +135,7 @@
       bottom: 40px;
       left: 50%;
       transform: translateX(-50%);
-      width: 80px;
-      height: 80px;
+      width: 80px; height: 80px;
       border-radius: 50%;
       border: 4px solid #fff;
       background: rgba(255,255,255,0.2);
@@ -153,13 +146,12 @@
     }
     #shutter::after {
       content: '';
-      width: 54px;
-      height: 54px;
+      width: 54px; height: 54px;
       border-radius: 50%;
-      background: #fff;         /* white by default */
+      background: #fff;     /* white by default */
     }
     #shutter.ready::after {
-      background: #0f0;         /* green when cardDetected */
+      background: #0f0;     /* green when cardDetected */
     }
 
     /* ─── Fatal Error Overlay ─── */
@@ -213,7 +205,7 @@
   <div id="wrapper">
     <video id="video" playsinline muted></video>
 
-    <!-- #guide will be sized in JS: width = 84vw; height = (84vw ÷ 1.75) -->
+    <!-- #guide will be sized by JS: width=84vw, height=(84vw ÷ 1.75) -->
     <div id="guide">
       <div id="corner_tl" class="corner tl"><div class="inner"></div></div>
       <div id="corner_tr" class="corner tr"><div class="inner"></div></div>
@@ -237,12 +229,12 @@
   </div>
 
   <script>
-    // ─── Configuration ───
-    const CARD_RATIO   = 3.5 / 2;   // EXACT 1.75 aspect ratio
-    const MIN_AREA_PCT = 0.20;      // require contour area ≥20% of ROI
+    // ─── Configuration Constants ───
+    const CARD_RATIO   = 3.5 / 2;   // exact 1.75 aspect
+    const MIN_AREA_PCT = 0.20;      // require contour ≥20% of guide ROI
     const OUTPUT_W     = 1280;      // final JPEG width (height = OUTPUT_W ÷ 1.75)
 
-    // ─── DOM Refs ───
+    // ─── DOM References ───
     const wrapper   = document.getElementById('wrapper');
     const videoEl   = document.getElementById('video');
     const msg       = document.getElementById('msg');
@@ -262,14 +254,15 @@
     // ─── State Variables ───
     let openCvReady  = false;
     let cardDetected = false;
-    // Offscreen canvas at camera’s native resolution
+    // Offscreen canvas at the camera’s full/native resolution
     const offscreen = document.createElement('canvas');
 
-    //
-    // 1) Size & center the guide rectangle (84vw × (84vw ÷ 1.75))
-    //
+    /**
+     * 1) Size and center the 3.5″×2″ guide (as 84vw × (84vw ÷ 1.75)).
+     *    Place four white “L” corners at its corners.
+     */
     function sizeGuide() {
-      const vw = window.innerWidth;
+      const vw     = window.innerWidth;
       const guideW = vw * 0.84;
       const guideH = guideW / CARD_RATIO;
       guideBox.style.width  = `${guideW}px`;
@@ -278,33 +271,33 @@
       guideBox.style.top    = `50%`;
       guideBox.style.transform = `translate(-50%, -50%)`;
 
-      // Show all four corners
+      // Show all four corners (they’re absolutely positioned inside #guide)
       cornerTL.style.display = 'block';
       cornerTR.style.display = 'block';
       cornerBL.style.display = 'block';
       cornerBR.style.display = 'block';
 
-      // Position hint text 20px below guide
+      // Position the hint text 20px below the guide
       const r = guideBox.getBoundingClientRect();
       hint.style.top = `${r.bottom + 20}px`;
       hint.style.left = `50%`;
       hint.style.transform = `translateX(-50%)`;
     }
 
-    //
-    // 2) Called once OpenCV.js loads successfully
-    //
+    /**
+     * 2) Called as soon as OpenCV.js successfully loads.
+     *    If the camera is already enabled, start detection immediately.
+     */
     function onOpenCvLoaded() {
       openCvReady = true;
-      // If camera was already enabled by a tap, start the detection loop now
       if (wrapper.dataset.cameraEnabled === 'true') {
-        startCameraAndLoop();
+        startDetectionLoop();
       }
     }
 
-    //
-    // 3) If cdnjs fails, load the official OpenCV.org fallback
-    //
+    /**
+     * 3) If cdnjs fails to load OpenCV.js, load the official fallback.
+     */
     function loadOpencvFallback() {
       const s = document.createElement('script');
       s.async = true;
@@ -314,24 +307,26 @@
       document.body.appendChild(s);
     }
 
-    //
-    // 4) If both CDNs fail, show an error overlay
-    //
+    /**
+     * 4) If both CDNs fail, show a fatal overlay.
+     */
     function onOpenCvFailed() {
-      fatal.textContent = 'Error: Could not load OpenCV.js from any CDN. Please check your network.';
+      fatal.textContent = 'Error: Could not load OpenCV.js from CDN. Check your network.';
       fatal.style.display = 'flex';
     }
 
-    //
-    // 5) Called on first tap/click: enable camera &—when OpenCV is ready—start loop
-    //
+    /**
+     * 5) Called on the first tap/click to enable the camera.
+     *    Once the camera is streaming and OpenCV is ready, start the detection loop.
+     */
     async function enableCamera() {
+      // Only run once:
       wrapper.removeEventListener('touchstart', enableCamera);
       wrapper.removeEventListener('click', enableCamera);
       wrapper.dataset.cameraEnabled = 'true';
       msg.style.display = 'none';
 
-      // Request back camera
+      // Request the back camera
       let stream;
       try {
         stream = await navigator.mediaDevices.getUserMedia({
@@ -339,7 +334,7 @@
           audio: false
         });
         videoEl.srcObject = stream;
-        // iOS: must call play() inside this gesture to suppress ▶︎
+        // On iOS: calling play() inside this user action suppresses the ▶︎ icon
         await videoEl.play();
       } catch (err) {
         fatal.textContent = 'Camera error: ' + (err.message || err.name);
@@ -347,90 +342,139 @@
         return;
       }
 
-      // Wait until metadata loaded (videoWidth/videoHeight known)
+      // Wait for the video to be ready (videoWidth/videoHeight are known)
       await new Promise(r => { videoEl.onloadedmetadata = r; });
 
-      // Set offscreen canvas to camera’s native resolution
+      // Set offscreen canvas to the camera’s full/native resolution
       offscreen.width  = videoEl.videoWidth;
       offscreen.height = videoEl.videoHeight;
 
-      // Now size & center guide
+      // Now that camera is running, size & center the guide
       sizeGuide();
 
-      // If OpenCV is already loaded, start detection; otherwise wait for onOpenCvLoaded
+      // If OpenCV is already ready, kick off detection; otherwise wait for onOpenCvLoaded
       if (openCvReady) {
-        startCameraAndLoop();
+        startDetectionLoop();
       }
     }
 
-    //
-    // 6) Once OpenCV is ready, begin continuous detectLoop()
-    //
-    function startCameraAndLoop() {
-      // Allocate reusable cv.Mat objects
-      const srcMat   = new cv.Mat();
-      const grayMat  = new cv.Mat();
-      const threshMat= new cv.Mat();
-      const contours = new cv.MatVector();
-      const hierarchy= new cv.Mat();
-      const approx   = new cv.Mat();
+    /**
+     * 6) Once OpenCV is loaded, start a continuous detectLoop():
+     *    - Draw camera → extract ROI under guide → threshold → findContours
+     *    - Look for a 4‐vertex contour of the right aspect (≈1.75)
+     *    - If found, set cardDetected = true, turn corners & shutter green
+     *    - Repeat each animation frame
+     */
+    function startDetectionLoop() {
+      // Allocate reusable cv.Mat objects here, so we don’t keep recreating them
+      const srcMat    = new cv.Mat();
+      const grayMat   = new cv.Mat();
+      const threshMat = new cv.Mat();
+      const contours  = new cv.MatVector();
+      const hierarchy = new cv.Mat();
+      const approx    = new cv.Mat();
 
       function detectLoop() {
         if (videoEl.paused || videoEl.ended) {
-          return; // camera not running
+          return; // camera stopped or not ready
         }
 
-        // 1) Draw current video frame to offscreen
+        // 1) Draw the current camera frame into offscreen at native resolution
         const offCtx = offscreen.getContext('2d');
         offCtx.drawImage(videoEl, 0, 0);
 
-        // 2) Compute guide CSS→native ROI
-        const guideCSS = guideBox.getBoundingClientRect();
+        // 2) Figure out exactly where the <video> image is displayed on screen (letterboxed by object-fit:contain)
         const videoCSS = videoEl.getBoundingClientRect();
-        const dispW = videoCSS.width, dispH = videoCSS.height;
-        const natW = videoEl.videoWidth, natH = videoEl.videoHeight;
-        const scaleX = natW / dispW, scaleY = natH / dispH;
-        const gx = (guideCSS.left - videoCSS.left) * scaleX;
-        const gy = (guideCSS.top  - videoCSS.top ) * scaleY;
-        const gw = guideCSS.width  * scaleX;
-        const gh = guideCSS.height * scaleY;
+        const vw       = videoEl.videoWidth;
+        const vh       = videoEl.videoHeight;
+        const vRatio   = vw / vh;
+        const eRatio   = videoCSS.width / videoCSS.height;
+        let dispW, dispH, offsetX, offsetY;
 
-        // 3) Extract ROI ImageData → cv.Mat
+        if (vRatio > eRatio) {
+          // Video is “wider” than element → bars on top/bottom
+          dispW   = videoCSS.width;
+          dispH   = dispW / vRatio;
+          offsetX = 0;
+          offsetY = (videoCSS.height - dispH) / 2;
+        } else {
+          // Video is “taller” than element → bars on left/right
+          dispH   = videoCSS.height;
+          dispW   = dispH * vRatio;
+          offsetY = 0;
+          offsetX = (videoCSS.width - dispW) / 2;
+        }
+        // Displayed video rectangle in CSS coords:
+        const displayLeft = videoCSS.left + offsetX;
+        const displayTop  = videoCSS.top  + offsetY;
+
+        // 3) Get the guide’s CSS bounding box, then subtract the letterbox offset,
+        //    and scale into the camera’s native pixel space
+        const guideCSS = guideBox.getBoundingClientRect();
+        const gx_css   = guideCSS.left;
+        const gy_css   = guideCSS.top;
+        const gw_css   = guideCSS.width;
+        const gh_css   = guideCSS.height;
+
+        // Convert CSS to “displayed-video‐only” coordinates:
+        // (px,py) in the CSS space under the videoImage must subtract displayLeft/Top
+        const gx_rel = gx_css - displayLeft;
+        const gy_rel = gy_css - displayTop;
+
+        // If the guide is partly outside the displayed video, we bail out early:
+        if (gx_rel < 0 || gy_rel < 0 ||
+            gx_rel + gw_css > dispW ||
+            gy_rel + gh_css > dispH)
+        {
+          cardDetected = false;
+          [cornerTL, cornerTR, cornerBL, cornerBR].forEach(c => c.classList.remove('ready'));
+          hint.textContent = 'Align card fully inside corners';
+          requestAnimationFrame(detectLoop);
+          return;
+        }
+
+        // Now scale from displayed‐CSS to native pixels:
+        const scaleX = vw / dispW;
+        const scaleY = vh / dispH;
+        const gx     = Math.round(gx_rel * scaleX);
+        const gy     = Math.round(gy_rel * scaleY);
+        const gw     = Math.round(gw_css * scaleX);
+        const gh     = Math.round(gh_css * scaleY);
+
+        // 4) Extract exactly that native‐pixel ROI and convert to cv.Mat
         let roiData;
         try {
           roiData = offCtx.getImageData(gx, gy, gw, gh);
         } catch (e) {
-          // ROI not available → skip detection
+          // If ROI is somehow out of bounds, abort detection
           cardDetected = false;
           [cornerTL, cornerTR, cornerBL, cornerBR].forEach(c => c.classList.remove('ready'));
-          hint.textContent = 'Align card inside corners';
+          hint.textContent = 'Align card fully inside corners';
           requestAnimationFrame(detectLoop);
           return;
         }
         srcMat.assign(cv.matFromImageData(roiData));
 
-        // 4) Convert to grayscale → threshold (binary)
+        // 5) Grayscale → binary threshold (120) → findContours
         cv.cvtColor(srcMat, grayMat, cv.COLOR_RGBA2GRAY);
         cv.threshold(grayMat, threshMat, 120, 255, cv.THRESH_BINARY);
 
-        // 5) Find contours & look for a 4‐point polygon
         cv.findContours(threshMat, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+
         let foundQuad = false;
         for (let i = 0; i < contours.size(); i++) {
           const cnt = contours.get(i);
           const area = cv.contourArea(cnt);
-          // Skip tiny contours (<20% of ROI)
           if (area < gw * gh * MIN_AREA_PCT) {
             cnt.delete();
             continue;
           }
           cv.approxPolyDP(cnt, approx, 0.02 * cv.arcLength(cnt, true), true);
           if (approx.rows === 4) {
-            // Check bounding rect aspect ratio
+            // Check bounding‐rect aspect ratio
             const rect = cv.boundingRect(approx);
             const ratio = rect.width / rect.height;
             if (ratio > 1.5 && ratio < 2.0) {
-              // A roughly 1.75:1 quadrilateral
               foundQuad = true;
               cnt.delete();
               break;
@@ -442,10 +486,9 @@
         contours.delete();
         approx.delete();
 
-        // 6) Toggle cardDetected
         cardDetected = foundQuad;
 
-        // 7) Color corners & update hint
+        // 6) Flip corners & update hint text
         [cornerTL, cornerTR, cornerBL, cornerBR].forEach(c => {
           if (cardDetected) c.classList.add('ready');
           else               c.classList.remove('ready');
@@ -454,36 +497,61 @@
           ? 'Hold steady and press shutter'
           : 'Move card fully inside corners';
 
-        // 8) Loop again
+        // 7) Loop again next animation frame
         requestAnimationFrame(detectLoop);
       }
 
-      // Kick off
+      // Start the loop immediately
       requestAnimationFrame(detectLoop);
     }
 
-    //
-    // 7) Shutter logic: if cardDetected → crop exactly under guide, else full‐frame
-    //
+    /**
+     * 7) Shutter Click:
+     *    - If cardDetected: crop exactly to (gx,gy,gw,gh) in native pixels → scale to 1280×731 → preview  
+     *    - If not detected: capture full native frame → preview  
+     */
     shutter.addEventListener('click', () => {
-      // Draw one final frame to offscreen
+      // 1) Draw final camera frame to offscreen
       const offCtx = offscreen.getContext('2d');
       offCtx.drawImage(videoEl, 0, 0);
 
-      // Recompute guide CSS→native
-      const guideCSS = guideBox.getBoundingClientRect();
+      // 2) Recompute the same mapping from guide CSS to native pixels:
       const videoCSS = videoEl.getBoundingClientRect();
-      const dispW = videoCSS.width, dispH = videoCSS.height;
-      const natW = videoEl.videoWidth, natH = videoEl.videoHeight;
-      const scaleX = natW / dispW, scaleY = natH / dispH;
-      const gx = (guideCSS.left - videoCSS.left) * scaleX;
-      const gy = (guideCSS.top  - videoCSS.top ) * scaleY;
-      const gw = guideCSS.width  * scaleX;
-      const gh = guideCSS.height * scaleY;
+      const vw       = videoEl.videoWidth;
+      const vh       = videoEl.videoHeight;
+      const vRatio   = vw / vh;
+      const eRatio   = videoCSS.width / videoCSS.height;
+      let dispW, dispH, offsetX, offsetY;
+      if (vRatio > eRatio) {
+        dispW   = videoCSS.width;
+        dispH   = dispW / vRatio;
+        offsetX = 0;
+        offsetY = (videoCSS.height - dispH) / 2;
+      } else {
+        dispH   = videoCSS.height;
+        dispW   = dispH * vRatio;
+        offsetY = 0;
+        offsetX = (videoCSS.width - dispW) / 2;
+      }
+      const displayLeft = videoCSS.left + offsetX;
+      const displayTop  = videoCSS.top  + offsetY;
 
+      const guideCSS = guideBox.getBoundingClientRect();
+      const gx_rel   = guideCSS.left - displayLeft;
+      const gy_rel   = guideCSS.top  - displayTop;
+      const gw_css   = guideCSS.width;
+      const gh_css   = guideCSS.height;
+      const scaleX   = vw / dispW;
+      const scaleY   = vh / dispH;
+      const gx       = Math.round(gx_rel * scaleX);
+      const gy       = Math.round(gy_rel * scaleY);
+      const gw       = Math.round(gw_css * scaleX);
+      const gh       = Math.round(gh_css * scaleY);
+
+      // 3) Create a new canvas for the final JPEG
       const outCanvas = document.createElement('canvas');
       if (cardDetected) {
-        // Crop → scale to 1280 × (1280 ÷ 1.75)
+        // Crop to guide ROI, then scale to 1280×731
         outCanvas.width  = OUTPUT_W;
         outCanvas.height = Math.round(OUTPUT_W / CARD_RATIO);
         const ctx = outCanvas.getContext('2d');
@@ -494,13 +562,14 @@
           outCanvas.width, outCanvas.height
         );
       } else {
-        // Fallback: full‐frame
+        // Fallback: capture full native frame
         outCanvas.width  = offscreen.width;
         outCanvas.height = offscreen.height;
         const ctx = outCanvas.getContext('2d');
         ctx.drawImage(offscreen, 0, 0);
       }
 
+      // 4) Show preview
       const jpegUrl = outCanvas.toDataURL('image/jpeg', 0.9);
       wrapper.style.display = 'none';
       preview.style.display = 'flex';
@@ -520,18 +589,18 @@
       };
     });
 
-    // ─── Bind first tap/click to enableCamera ───
+    // ─── Bind only once: “Touch or Click” to enable camera ───
     wrapper.addEventListener('touchstart', enableCamera, { once: true });
-    wrapper.addEventListener('click', enableCamera, { once: true });
+    wrapper.addEventListener('click',      enableCamera, { once: true });
 
-    // ─── On resize or rotate, re‐size the guide if camera is active ───
+    // ─── On rotate/resize, re-size the guide if camera is running ───
     window.addEventListener('resize', () => {
       if (!videoEl.paused && !videoEl.ended) {
         sizeGuide();
       }
     });
 
-    // ─── Draw the guide immediately on load ───
+    // ─── Draw the guide immediately on page load ───
     document.addEventListener('DOMContentLoaded', () => {
       sizeGuide();
     });
