@@ -1,177 +1,152 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Card Scanner (pure JS smarter)</title>
+<title>Skintelli Card Capture</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<script src="https://cdn.jsdelivr.net/npm/jscanify@1/dist/jscanify.min.js"></script> <!-- 120 KB gzipped -->
+<script type="module" src="https://cdn.jsdelivr.net/npm/@tesseractjs/worker@5.0.2/dist/worker.min.js"></script> <!-- 180 KB gz -->
 <style>
-html,body{margin:0;height:100%;overflow:hidden;background:#000;font-family:-apple-system,Roboto,Helvetica,Arial,sans-serif}
-#cam,#preview{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
+html,body{margin:0;height:100%;overflow:hidden;background:#000;font-family:-apple-system,Roboto,Helvetica;}
+#root,#preview{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
 video,canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
 canvas{pointer-events:none;z-index:10}
-#msg{position:absolute;top:14px;left:50%;transform:translateX(-50%);padding:6px 14px;border-radius:8px;background:rgba(0,0,0,.65);color:#fff;font-size:15px;z-index:20}
-#hint{position:absolute;left:50%;transform:translateX(-50%);color:#fff;font-size:15px;text-align:center;pointer-events:none;z-index:20}
-#fatal{position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.85);color:#fff;font-size:17px;text-align:center;padding:24px;z-index:40}
-#snap{position:absolute;bottom:42px;left:50%;transform:translateX(-50%);width:80px;height:80px;border-radius:50%;border:4px solid #fff;background:rgba(255,255,255,.15);display:flex;align-items:center;justify-content:center;opacity:.3;pointer-events:none;transition:.2s ease;z-index:20}
+#msg{position:absolute;top:14px;left:50%;transform:translateX(-50%);padding:6px 14px;border-radius:8px;
+     background:rgba(0,0,0,.65);color:#fff;font-size:15px;z-index:20}
+#hint{position:absolute;left:50%;transform:translateX(-50%);color:#fff;font-size:15px;text-align:center;
+      pointer-events:none;z-index:20}
+#snap{position:absolute;bottom:42px;left:50%;transform:translateX(-50%);width:80px;height:80px;border-radius:50%;
+      border:4px solid #fff;background:rgba(255,255,255,.15);display:flex;align-items:center;justify-content:center;
+      opacity:.3;pointer-events:none;transition:.2s;z-index:20}
 #snap::after{content:'';width:54px;height:54px;border-radius:50%;background:#fff}
 #snap.ready{opacity:1}
 #snap.ready::after{background:#0f0}
-#preview{flex-direction:column;gap:18px;background:#000;display:none}
+#preview{flex-direction:column;gap:18px;display:none;background:#000}
 #shot{max-width:96%;max-height:96%;border:4px solid #fff;border-radius:10px}
-.ctrls button{padding:12px 26px;font-size:16px;border:none;border-radius:40px;margin:0 10px;background:#fff}
+.ctrls button{padding:12px 26px;border:none;border-radius:40px;background:#fff;margin:0 10px;font-size:16px}
 </style>
 </head>
 <body>
-
-<div id="cam">
-  <video id="video" autoplay playsinline muted></video>
-  <canvas id="overlay"></canvas>
-
-  <div id="msg">Tap to enable camera</div>
-  <div id="hint"></div>
-  <button id="snap" aria-label="Shutter"></button>
-
-  <div id="fatal"></div>
+<div id="root">
+  <video id="cam" autoplay playsinline muted disablePictureInPicture></video>
+  <canvas id="ov"></canvas>
+  <div id="msg">Tap to enable camera</div><div id="hint"></div><button id="snap"></button>
 </div>
 
 <div id="preview">
-  <img id="shot" alt="">
-  <div class="ctrls">
-    <button id="download">Download</button>
-    <button id="retake">Retake</button>
+  <img id="shot"><div class="ctrls">
+    <button id="dl">Download</button><button id="rt">Retake</button>
   </div>
 </div>
 
 <script type="module">
-/* ▸ parameters */
-const CARD_RATIO   = 1280/726;   // 1.76
-const GUIDE_MARGIN = 0.08;       // 8 %
-const BRIGHT_MIN   = 55;         // mean luminance
-const WHITE_RATIO  = 0.45;       // ≥45 % nearly-white pixels
-const CYAN_RATIO   = 0.03;       // ≥3 % cyan pixels in bottom third
-const DEST_W       = 1280;       // output width
+import { createWorker } from "@tesseractjs/worker";
 
-/* ▸ DOM refs */
-const v=document.getElementById('video'), ov=document.getElementById('overlay'), ctx=ov.getContext('2d');
-const msg=document.getElementById('msg'), hint=document.getElementById('hint'), fatal=document.getElementById('fatal');
-const snap=document.getElementById('snap'), shot=document.getElementById('shot'), dl=document.getElementById('download'), rt=document.getElementById('retake');
-const cam=document.getElementById('cam'), prev=document.getElementById('preview');
+/* ─── constants ─── */
+const RATIO = 1280/726, PADDING=.08, OCR_WORD="SKINTELLI",
+      DEST_W=1280;
 
-/* ▸ globals */
-let guide=null, ready=false;
+/* ─── DOM ─── */
+const v=document.getElementById('cam'), cvs=document.getElementById('ov'), ctx=cvs.getContext('2d'),
+      msg=document.getElementById('msg'), hint=document.getElementById('hint'),
+      snap=document.getElementById('snap'),
+      shot=document.getElementById('shot'), dl=document.getElementById('dl'), rt=document.getElementById('rt'),
+      root=document.getElementById('root'), prev=document.getElementById('preview');
 const off=document.createElement('canvas');
 
-/* ▸ gesture to start */
-const kick=()=>{document.removeEventListener('touchstart',kick);document.removeEventListener('click',kick);initCam();};
-document.addEventListener('touchstart',kick,{once:true});
-document.addEventListener('click',kick,{once:true});
+/* ─── globals ─── */
+let guide={}, ready=false, worker;
 
-/* ▸ camera init */
-async function initCam(){
-  msg.textContent='Requesting camera…';
-  try{
-    const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}}});
-    v.srcObject=stream; await v.play().catch(()=>{});
-  }catch(e){fatalError(e);return;}
-
-  const boot=()=>{if(!v.videoWidth)return;
-    ov.width=off.width=v.videoWidth; ov.height=off.height=v.videoHeight;
-    guide=calcGuide(ov.width,ov.height); msg.textContent='Align card inside brackets';
-    requestAnimationFrame(loop);
-    v.removeEventListener('playing',boot);v.removeEventListener('loadedmetadata',boot);clearInterval(poll);};
-  v.addEventListener('playing',boot,{once:true});
-  v.addEventListener('loadedmetadata',boot,{once:true});
-  const poll=setInterval(boot,100);
+/* cheap promise wrapper for Tesseract worker */
+async function ocrContains(img,word){
+  if(!("TextDetector" in window)){                     // fallback to worker
+    if(!worker){ worker=await createWorker(); await worker.loadLanguage('eng'); await worker.initialize('eng');}
+    const { data:{ text } }=await worker.recognize(img);
+    return new RegExp(word,'i').test(text);
+  }
+  const detector=new TextDetector();
+  const txt=await detector.detect(img);
+  return txt.some(t=>new RegExp(word,'i').test(t.rawValue));
 }
 
-/* ▸ guide rectangle geometry */
-function calcGuide(W,H){
-  const maxW=W*(1-GUIDE_MARGIN*2); let gw=maxW, gh=gw/CARD_RATIO;
-  if(gh>H*(1-GUIDE_MARGIN*2)){gh=H*(1-GUIDE_MARGIN*2);gw=gh*CARD_RATIO;}
-  return{gx:(W-gw)/2, gy:(H-gh)/2, gw, gh};
+/* geometry helpers */
+function setGuide(w,h){
+  const maxW=w*(1-PADDING*2);let gw=maxW,gh=gw/RATIO;
+  if(gh>h*(1-PADDING*2)){gh=h*(1-PADDING*2);gw=gh*RATIO;}
+  guide={gx:(w-gw)/2,gy:(h-gh)/2,gw,gh};
 }
 
-/* ▸ drawing brackets */
-function drawBrackets(green){
-  const {gx,gy,gw,gh}=guide;
-  ctx.clearRect(0,0,ov.width,ov.height);
-  ctx.lineWidth=6; ctx.strokeStyle=green?'#0f0':'#fff';
-  const L=40;
+/* bracket draw */
+function draw(g){
+  const {gx,gy,gw,gh}=guide, L=40;
+  ctx.clearRect(0,0,cvs.width,cvs.height);
+  ctx.lineWidth=6;ctx.strokeStyle=g?'#0f0':'#fff';
   ctx.beginPath();
   ctx.moveTo(gx,gy+L);ctx.lineTo(gx,gy);ctx.lineTo(gx+L,gy);
   ctx.moveTo(gx+gw-L,gy);ctx.lineTo(gx+gw,gy);ctx.lineTo(gx+gw,gy+L);
   ctx.moveTo(gx+gw,gy+gh-L);ctx.lineTo(gx+gw,gy+gh);ctx.lineTo(gx+gw-L,gy+gh);
-  ctx.moveTo(gx+L,gy+gh);ctx.lineTo(gx,gy+gh);ctx.lineTo(gx,gy+gh-L);
-  ctx.stroke();
-
-  ctx.lineWidth=1;ctx.strokeStyle='rgba(255,255,255,.4)';
-  for(let i=1;i<3;i++){
-    ctx.beginPath();ctx.moveTo(gx+gw*i/3,gy);ctx.lineTo(gx+gw*i/3,gy+gh);ctx.stroke();
-    ctx.beginPath();ctx.moveTo(gx,gy+gh*i/3);ctx.lineTo(gx+gw,gy+gh*i/3);ctx.stroke();}
+  ctx.moveTo(gx+L,gy+gh);ctx.lineTo(gx,gy+gh);ctx.lineTo(gx,gy+gh-L);ctx.stroke();
   hint.style.top=`${gy+gh+20}px`;
 }
 
-/* ▸ quick color helpers */
-const isWhite=(r,g,b)=>r>200&&g>200&&b>200;
-const isCyan=(r,g,b)=>g>140&&b>140&&r<120;
-
-/* ▸ main loop */
-function loop(){
-  if(v.readyState<2){requestAnimationFrame(loop);return;}
-  off.getContext('2d').drawImage(v,0,0);
-
-  const {gx,gy,gw,gh}=guide;
-  const id=off.getContext('2d').getImageData(gx,gy,gw,gh);
-  const data=id.data, total=data.length/4;
-
-  /* luminance & color ratios */
-  let lumSum=0, whites=0, cyans=0;
-  for(let i=0;i<data.length;i+=4){
-    const r=data[i],g=data[i+1],b=data[i+2];
-    lumSum+=(r+g+b)/3;
-    if(isWhite(r,g,b)) whites++;
-    if(isCyan(r,g,b) && (Math.floor(i/4)/(gw*gh))>0.66) cyans++; // only bottom third
-  }
-  const brightOK = (lumSum/total)>BRIGHT_MIN;
-  const whiteOK  = whites/total > WHITE_RATIO;
-  const cyanOK   = cyans/total  > CYAN_RATIO;
-
-  ready = brightOK && whiteOK && cyanOK;
-  drawBrackets(ready);
-
-  hint.textContent = ready
-      ? 'Hold steady and press shutter'
-      : !brightOK ? 'Add more light'
-      : !whiteOK  ? 'Move card fully inside brackets'
-      : 'Point card squares toward bottom';
-
-  msg.textContent = ready ? 'Ready – press shutter' : 'Align card inside brackets';
-  snap.classList.toggle('ready',ready);
-
+/* main logic */
+async function init(){
+  const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}}});
+  v.srcObject=stream; await v.play();
+  await new Promise(r=>v.onloadedmetadata=r);
+  cvs.width=off.width=v.videoWidth; cvs.height=off.height=v.videoHeight;
+  setGuide(cvs.width,cvs.height);
+  msg.textContent="Align card inside brackets";
   requestAnimationFrame(loop);
 }
 
-/* ▸ shutter */
+/* card detector each frame */
+async function loop(){
+  off.getContext('2d').drawImage(v,0,0);                       // copy frame
+  const {gx,gy,gw,gh}=guide, mini=off.getContext('2d').getImageData(gx,gy,gw,gh);
+  /* 1. rectangle detection via jscanify */
+  const res = window.jscanify.detect(mini);                    // returns array of quads
+  let rectFound=false;
+  if(res.length){
+    const q=res[0].map(p=>({x:p.x+gx,y:p.y+gy}));              // adjust coords
+    /* size+ratio sanity */
+    const bw=Math.hypot(q[1].x-q[0].x, q[1].y-q[0].y),
+          bh=Math.hypot(q[3].x-q[0].x, q[3].y-q[0].y);
+    const covW=bw/gw, covH=bh/gh, ar=bw/bh;
+    rectFound = covW>.9 && covH>.9 && Math.abs(ar-RATIO)/RATIO<.1;
+  }
+  /* 2. OCR SKINTELLI test every 700 ms if rect present */
+  let ocrOk=false;
+  if(rectFound && (!window._lastOCR || Date.now()-window._lastOCR>700)){
+    window._lastOCR=Date.now();
+    const blob=await new Promise(cb=>off.toBlob(cb,'image/jpeg',0.6));
+    ocrOk = await ocrContains(blob,OCR_WORD);
+  }
+  ready = rectFound && ocrOk;
+  draw(ready);
+  hint.textContent = ready ? "Hold steady and press shutter"
+        : rectFound ? "Reading card…" : "Move card fully inside brackets";
+  msg.textContent  = ready ? "Ready – press shutter" : "Align card inside brackets";
+  snap.classList.toggle('ready',ready);
+  requestAnimationFrame(loop);
+}
+
+/* shutter */
 snap.onclick=()=>{
   if(!ready) return;
   const {gx,gy,gw,gh}=guide;
   off.getContext('2d').drawImage(v,0,0);
-  const out=document.createElement('canvas');
-  out.width=DEST_W; out.height=Math.round(DEST_W/CARD_RATIO);
+  const out=document.createElement('canvas'); out.width=DEST_W; out.height=Math.round(DEST_W/RATIO);
   out.getContext('2d').drawImage(off,gx,gy,gw,gh,0,0,out.width,out.height);
-  const url=out.toDataURL('image/jpeg',0.92);
-
-  cam.style.display='none'; prev.style.display='flex';
-  shot.src=url;
+  const url=out.toDataURL('image/jpeg',0.9);
+  cam.style.display='none'; prev.style.display='flex'; shot.src=url;
   dl.onclick=()=>{const a=document.createElement('a');a.href=url;a.download='card.jpg';a.click();};
   rt.onclick=()=>{prev.style.display='none';cam.style.display='block';};
 };
 
-/* ▸ fatal helper */
-function fatalError(err){
-  fatal.innerHTML=typeof err==='string'?err:`${err.name||''}<br>${err.message||err}`;
-  fatal.style.display='flex'; msg.style.display='none'; snap.style.display='none';
-}
+/* fatal catcher */
+const fatalError=e=>{fatal.innerHTML=`${e.name||''}<br>${e.message||e}`;fatal.style.display='flex';};
+document.addEventListener('touchstart',init,{once:true});
 </script>
 </body>
 </html>
