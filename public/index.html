@@ -2,10 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Card Scanner (pure JS – fixed)</title>
+<title>Card Scanner (pure JS smarter)</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-/* -------- layout / styling (unchanged) -------- */
 html,body{margin:0;height:100%;overflow:hidden;background:#000;font-family:-apple-system,Roboto,Helvetica,Arial,sans-serif}
 #cam,#preview{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
 video,canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
@@ -24,7 +23,6 @@ canvas{pointer-events:none;z-index:10}
 </head>
 <body>
 
-<!-- live camera stage -->
 <div id="cam">
   <video id="video" autoplay playsinline muted></video>
   <canvas id="overlay"></canvas>
@@ -36,7 +34,6 @@ canvas{pointer-events:none;z-index:10}
   <div id="fatal"></div>
 </div>
 
-<!-- preview stage -->
 <div id="preview">
   <img id="shot" alt="">
   <div class="ctrls">
@@ -46,185 +43,134 @@ canvas{pointer-events:none;z-index:10}
 </div>
 
 <script type="module">
-/* ===== tweakables ===== */
-const CARD_RATIO   = 1280/726;     // 1.76 : 1
-const GUIDE_MARGIN = 0.10;         // 8 % padding
-const BRIGHT_MIN   = 55;           // mean luminance
-const COVER_MIN    = 0.85;         // bounding-box coverage
-const AR_TOL       = 0.35;         // ±15 % of true ratio
-const EDGE_MIN     = 400;          // # edge pixels
-const DEST_W       = 1280;         // output width
+/* ▸ parameters */
+const CARD_RATIO   = 1280/726;   // 1.76
+const GUIDE_MARGIN = 0.08;       // 8 %
+const BRIGHT_MIN   = 55;         // mean luminance
+const WHITE_RATIO  = 0.45;       // ≥45 % nearly-white pixels
+const CYAN_RATIO   = 0.03;       // ≥3 % cyan pixels in bottom third
+const DEST_W       = 1280;       // output width
 
-/* ===== DOM refs ===== */
-const video = document.getElementById('video');
-const overlay = document.getElementById('overlay');
-const ctx = overlay.getContext('2d');
-const msg  = document.getElementById('msg');
-const hint = document.getElementById('hint');
-const fatal= document.getElementById('fatal');
-const snap = document.getElementById('snap');
-const shot = document.getElementById('shot');
-const dl   = document.getElementById('download');
-const rt   = document.getElementById('retake');
-const camStage  = document.getElementById('cam');
-const prevStage = document.getElementById('preview');
+/* ▸ DOM refs */
+const v=document.getElementById('video'), ov=document.getElementById('overlay'), ctx=ov.getContext('2d');
+const msg=document.getElementById('msg'), hint=document.getElementById('hint'), fatal=document.getElementById('fatal');
+const snap=document.getElementById('snap'), shot=document.getElementById('shot'), dl=document.getElementById('download'), rt=document.getElementById('retake');
+const cam=document.getElementById('cam'), prev=document.getElementById('preview');
 
-/* ===== globals ===== */
-let guide = null;
-let ready = false;
+/* ▸ globals */
+let guide=null, ready=false;
+const off=document.createElement('canvas');
 
-/* off-screen canvas */
-const off = document.createElement('canvas');
-
-/* ===== boot after first user gesture ===== */
-const kick = () => { document.removeEventListener('touchstart',kick); document.removeEventListener('click',kick); initCamera(); };
+/* ▸ gesture to start */
+const kick=()=>{document.removeEventListener('touchstart',kick);document.removeEventListener('click',kick);initCam();};
 document.addEventListener('touchstart',kick,{once:true});
 document.addEventListener('click',kick,{once:true});
 
-/* ===== camera init ===== */
-async function initCamera(){
-  msg.textContent = 'Requesting camera…';
+/* ▸ camera init */
+async function initCam(){
+  msg.textContent='Requesting camera…';
   try{
-    const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:'environment'} } });
-    video.srcObject = stream;
-    await video.play().catch(()=>{});
-  }catch(err){
-    fatalError(
-      err.name==='NotAllowedError'
-        ? 'Camera permission denied.<br>Safari → aA → Website Settings → Camera → Allow'
-        : `Could not access camera:<br>${err.message}`
-    );
-    return;
-  }
+    const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}}});
+    v.srcObject=stream; await v.play().catch(()=>{});
+  }catch(e){fatalError(e);return;}
 
-  const boot = () => {
-    if (!video.videoWidth) return;
-    overlay.width  = off.width  = video.videoWidth;
-    overlay.height = off.height = video.videoHeight;
-    guide = calcGuide(overlay.width, overlay.height);
-    msg.textContent = 'Align card inside brackets';
+  const boot=()=>{if(!v.videoWidth)return;
+    ov.width=off.width=v.videoWidth; ov.height=off.height=v.videoHeight;
+    guide=calcGuide(ov.width,ov.height); msg.textContent='Align card inside brackets';
     requestAnimationFrame(loop);
-    video.removeEventListener('playing',boot);
-    video.removeEventListener('loadedmetadata',boot);
-    clearInterval(poll);
-  };
-  video.addEventListener('playing', boot, { once:true });
-  video.addEventListener('loadedmetadata', boot, { once:true });
-  const poll = setInterval(boot, 100);
+    v.removeEventListener('playing',boot);v.removeEventListener('loadedmetadata',boot);clearInterval(poll);};
+  v.addEventListener('playing',boot,{once:true});
+  v.addEventListener('loadedmetadata',boot,{once:true});
+  const poll=setInterval(boot,100);
 }
 
-/* ===== helper: guide rectangle ===== */
+/* ▸ guide rectangle geometry */
 function calcGuide(W,H){
-  const maxW = W*(1-GUIDE_MARGIN*2);
-  let gw=maxW, gh=gw/CARD_RATIO;
-  if(gh>H*(1-GUIDE_MARGIN*2)){ gh=H*(1-GUIDE_MARGIN*2); gw=gh*CARD_RATIO; }
-  return { gx:(W-gw)/2, gy:(H-gh)/2, gw, gh };
+  const maxW=W*(1-GUIDE_MARGIN*2); let gw=maxW, gh=gw/CARD_RATIO;
+  if(gh>H*(1-GUIDE_MARGIN*2)){gh=H*(1-GUIDE_MARGIN*2);gw=gh*CARD_RATIO;}
+  return{gx:(W-gw)/2, gy:(H-gh)/2, gw, gh};
 }
 
-/* ===== helper: draw brackets ===== */
-function drawBrackets(isGreen){
+/* ▸ drawing brackets */
+function drawBrackets(green){
   const {gx,gy,gw,gh}=guide;
-  ctx.clearRect(0,0,overlay.width,overlay.height);
-
+  ctx.clearRect(0,0,ov.width,ov.height);
+  ctx.lineWidth=6; ctx.strokeStyle=green?'#0f0':'#fff';
   const L=40;
-  ctx.lineWidth = 6;
-  ctx.strokeStyle = isGreen ? '#0f0' : '#fff';
-
   ctx.beginPath();
-  ctx.moveTo(gx,gy+L);          ctx.lineTo(gx,gy);          ctx.lineTo(gx+L,gy);
-  ctx.moveTo(gx+gw-L,gy);       ctx.lineTo(gx+gw,gy);       ctx.lineTo(gx+gw,gy+L);
-  ctx.moveTo(gx+gw,gy+gh-L);    ctx.lineTo(gx+gw,gy+gh);    ctx.lineTo(gx+gw-L,gy+gh);
-  ctx.moveTo(gx+L,gy+gh);       ctx.lineTo(gx,gy+gh);       ctx.lineTo(gx,gy+gh-L);
+  ctx.moveTo(gx,gy+L);ctx.lineTo(gx,gy);ctx.lineTo(gx+L,gy);
+  ctx.moveTo(gx+gw-L,gy);ctx.lineTo(gx+gw,gy);ctx.lineTo(gx+gw,gy+L);
+  ctx.moveTo(gx+gw,gy+gh-L);ctx.lineTo(gx+gw,gy+gh);ctx.lineTo(gx+gw-L,gy+gh);
+  ctx.moveTo(gx+L,gy+gh);ctx.lineTo(gx,gy+gh);ctx.lineTo(gx,gy+gh-L);
   ctx.stroke();
 
-  ctx.lineWidth = 1;
-  ctx.strokeStyle = 'rgba(255,255,255,.4)';
+  ctx.lineWidth=1;ctx.strokeStyle='rgba(255,255,255,.4)';
   for(let i=1;i<3;i++){
-    ctx.beginPath(); ctx.moveTo(gx+gw*i/3,gy);     ctx.lineTo(gx+gw*i/3,gy+gh); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(gx,gy+gh*i/3);     ctx.lineTo(gx+gw,gy+gh*i/3); ctx.stroke();
-  }
-
-  hint.style.top = `${gy+gh+20}px`;
+    ctx.beginPath();ctx.moveTo(gx+gw*i/3,gy);ctx.lineTo(gx+gw*i/3,gy+gh);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(gx,gy+gh*i/3);ctx.lineTo(gx+gw,gy+gh*i/3);ctx.stroke();}
+  hint.style.top=`${gy+gh+20}px`;
 }
 
-/* ===== edge detector ===== */
-function rectPresent(image,w,h){
-  let minX=w, minY=h, maxX=0, maxY=0, edges=0;
-  for(let y=0;y<h-1;y++){
-    for(let x=0;x<w-1;x++){
-      const i=(y*w+x)*4;
-      const lum   =(image[i]+image[i+1]+image[i+2])/3;
-      const lumR  =(image[i+4]+image[i+5]+image[i+6])/3;
-      const lumD  =(image[i+w*4]+image[i+w*4+1]+image[i+w*4+2])/3;
-      if(Math.abs(lum-lumR)>25 || Math.abs(lum-lumD)>25){
-        edges++;
-        if(x<minX)minX=x; if(y<minY)minY=y;
-        if(x>maxX)maxX=x; if(y>maxY)maxY=y;
-      }
-    }
-  }
-  if(edges<EDGE_MIN) return false;
-  const bw=maxX-minX, bh=maxY-minY;
-  if(bw<=0||bh<=0)   return false;
-  const coverW=bw/w, coverH=bh/h;
-  const ar=bw/bh, arOK=Math.abs(ar-CARD_RATIO)/CARD_RATIO<AR_TOL;
-  return coverW>COVER_MIN && coverH>COVER_MIN && arOK;
-}
+/* ▸ quick color helpers */
+const isWhite=(r,g,b)=>r>200&&g>200&&b>200;
+const isCyan=(r,g,b)=>g>140&&b>140&&r<120;
 
-/* ===== main loop ===== */
+/* ▸ main loop */
 function loop(){
-  if(video.readyState<2){requestAnimationFrame(loop);return;}
-  off.getContext('2d').drawImage(video,0,0);
+  if(v.readyState<2){requestAnimationFrame(loop);return;}
+  off.getContext('2d').drawImage(v,0,0);
 
   const {gx,gy,gw,gh}=guide;
-  const sample = off.getContext('2d').getImageData(gx,gy,gw,gh);
-  /* brightness */
-  let lum=0; const d=sample.data;
-  for(let i=0;i<d.length;i+=4) lum+=(d[i]+d[i+1]+d[i+2])/3;
-  const brightOK = (lum/(d.length/4)) > BRIGHT_MIN;
-  /* rectangle */
-  const rectOK   = rectPresent(d,gw,gh);
+  const id=off.getContext('2d').getImageData(gx,gy,gw,gh);
+  const data=id.data, total=data.length/4;
 
-  ready = brightOK && rectOK;
+  /* luminance & color ratios */
+  let lumSum=0, whites=0, cyans=0;
+  for(let i=0;i<data.length;i+=4){
+    const r=data[i],g=data[i+1],b=data[i+2];
+    lumSum+=(r+g+b)/3;
+    if(isWhite(r,g,b)) whites++;
+    if(isCyan(r,g,b) && (Math.floor(i/4)/(gw*gh))>0.66) cyans++; // only bottom third
+  }
+  const brightOK = (lumSum/total)>BRIGHT_MIN;
+  const whiteOK  = whites/total > WHITE_RATIO;
+  const cyanOK   = cyans/total  > CYAN_RATIO;
+
+  ready = brightOK && whiteOK && cyanOK;
   drawBrackets(ready);
 
   hint.textContent = ready
       ? 'Hold steady and press shutter'
-      : (brightOK ? 'Move card fully inside brackets' : 'Add more light');
+      : !brightOK ? 'Add more light'
+      : !whiteOK  ? 'Move card fully inside brackets'
+      : 'Point card squares toward bottom';
 
   msg.textContent = ready ? 'Ready – press shutter' : 'Align card inside brackets';
-  snap.classList.toggle('ready', ready);
+  snap.classList.toggle('ready',ready);
 
   requestAnimationFrame(loop);
 }
 
-/* ===== shutter ===== */
-snap.onclick = () => {
+/* ▸ shutter */
+snap.onclick=()=>{
   if(!ready) return;
-
-  const {gx,gy,gw,gh} = guide;
-  off.getContext('2d').drawImage(video,0,0);
-
-  /* crop & scale */
-  const out = document.createElement('canvas');
-  out.width  = DEST_W;
-  out.height = Math.round(DEST_W/CARD_RATIO);
+  const {gx,gy,gw,gh}=guide;
+  off.getContext('2d').drawImage(v,0,0);
+  const out=document.createElement('canvas');
+  out.width=DEST_W; out.height=Math.round(DEST_W/CARD_RATIO);
   out.getContext('2d').drawImage(off,gx,gy,gw,gh,0,0,out.width,out.height);
+  const url=out.toDataURL('image/jpeg',0.92);
 
-  const url = out.toDataURL('image/jpeg',0.92);
-  camStage.style.display='none'; prevStage.style.display='flex';
-  shot.src = url;
-
-  dl.onclick = () => { const a=document.createElement('a'); a.href=url; a.download='card.jpg'; a.click(); };
-  rt.onclick = () => { prevStage.style.display='none'; camStage.style.display='block'; };
+  cam.style.display='none'; prev.style.display='flex';
+  shot.src=url;
+  dl.onclick=()=>{const a=document.createElement('a');a.href=url;a.download='card.jpg';a.click();};
+  rt.onclick=()=>{prev.style.display='none';cam.style.display='block';};
 };
 
-/* ===== fatal helper ===== */
-function fatalError(html){
-  fatal.innerHTML = html;
-  fatal.style.display = 'flex';
-  msg.style.display   = 'none';
-  snap.style.display  = 'none';
+/* ▸ fatal helper */
+function fatalError(err){
+  fatal.innerHTML=typeof err==='string'?err:`${err.name||''}<br>${err.message||err}`;
+  fatal.style.display='flex'; msg.style.display='none'; snap.style.display='none';
 }
 </script>
 </body>
